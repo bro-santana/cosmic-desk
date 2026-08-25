@@ -7,9 +7,14 @@ hosts your screen and views someone else's. It runs quietly in the tray, starts 
 PC, and connects directly by IP — there is no account, no connection-ID broker and no
 relay server.
 
-> **Status: early development.** Milestone M0 (scaffold: window, tray, settings) is
-> complete. Screen sharing and remote viewing are not implemented yet. See
-> [`PLAN.md`](PLAN.md) for the full milestone plan.
+> **Status: early development.** Milestone M1 is complete — the app now hosts the
+> desktop over the Moonlight protocol: pair with a stock Moonlight client using
+> Cosmic Desk's native PIN dialog, then stream video, audio and input. The app
+> boots to the tray and runs the host automatically. The viewer role (connecting
+> *to* a host from Cosmic Desk) is still not implemented (M2). The two-machine
+> interop matrix from [`PLAN.md`](PLAN.md) §9 still has to be run manually against
+> a stock Moonlight client on a second machine — this has not been machine-validated
+> yet. See [`PLAN.md`](PLAN.md) for the full milestone plan.
 
 ## Features (target scope)
 
@@ -66,8 +71,9 @@ with `COSMIC MODIFICATION` comments.
 | [tray](https://github.com/zserge/tray) | MIT | Tray icon and menu |
 
 Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-3.0** —
-see [`LICENSE`](LICENSE). Cosmic Desk is not affiliated with or endorsed by the
-LizardByte or Moonlight projects.
+see [`LICENSE`](LICENSE). One vendored component, libdisplaydevice, is AGPL-3.0;
+combining it with the GPL-3.0 code makes the combined work subject to AGPL-3.0 terms.
+Cosmic Desk is not affiliated with or endorsed by the LizardByte or Moonlight projects.
 
 ## Known limitations
 

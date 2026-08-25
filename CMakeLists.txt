@@ -16,19 +16,33 @@ find_package(nlohmann_json REQUIRED)
 add_subdirectory(third-party/imgui)
 
 # ---------------------------------------------------------------------------
+# cosmic_host: vendored stripped Sunshine host as a static library (M1).
+# ---------------------------------------------------------------------------
+add_subdirectory(host/sunshine)
+
+# ---------------------------------------------------------------------------
 # cosmicdesk: the single unified binary (host role + viewer role + UI).
 # M0 scope: SDL window, ImGui, tray icon, settings file.
+# M1.3: host glue (src/hostglue/host.cpp) boots the vendored host at launch.
 # ---------------------------------------------------------------------------
 add_executable(cosmicdesk
     src/main.cpp
     src/app/settings.cpp
+    src/hostglue/host.cpp
+    src/hostglue/pin_bridge.cpp
+    src/ui/pin_dialog.cpp
     src/ui/tray.cpp
 )
 
 target_include_directories(cosmicdesk PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third-party/tray
+    # host.cpp includes vendored Sunshine headers as "src/..." (host/sunshine root).
+    ${CMAKE_CURRENT_SOURCE_DIR}/host/sunshine
 )
+
+# cosmic_host is C++23; the glue and everything else in this binary must agree.
+target_compile_features(cosmicdesk PRIVATE cxx_std_23)
 
 if(WIN32)
     # SDL2main is a static library that calls into SDL2, so it has to be listed
@@ -37,6 +51,7 @@ if(WIN32)
 endif()
 
 target_link_libraries(cosmicdesk PRIVATE
+    cosmic_host
     cosmic_imgui
     nlohmann_json::nlohmann_json
     SDL2::SDL2

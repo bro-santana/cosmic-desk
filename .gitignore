@@ -8,3 +8,6 @@ compile_commands.json
 .vscode/
 .idea/
 CMakeUserPresets.json
+
+# runtime artifacts
+imgui.ini

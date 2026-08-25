@@ -1,3 +1,6 @@
 [submodule "third-party/moonlight-common-c"]
 	path = third-party/moonlight-common-c
 	url = https://github.com/moonlight-stream/moonlight-common-c.git
+[submodule "third-party/inputtino"]
+	path = third-party/inputtino
+	url = https://github.com/games-on-whales/inputtino.git

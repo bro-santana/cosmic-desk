@@ -253,6 +253,7 @@ CMake; imgui/tray/libgamestream get tiny hand-written CMakeLists), builds
 pacman -Syu            # restart shell if asked, run again
 pacman -S --needed git \
   mingw-w64-ucrt-x86_64-toolchain \
+  mingw-w64-ucrt-x86_64-pkgconf \
   mingw-w64-ucrt-x86_64-cmake \
   mingw-w64-ucrt-x86_64-ninja \
   mingw-w64-ucrt-x86_64-SDL2 \
@@ -262,6 +263,7 @@ pacman -S --needed git \
   mingw-w64-ucrt-x86_64-expat \
   mingw-w64-ucrt-x86_64-opus \
   mingw-w64-ucrt-x86_64-boost \
+  mingw-w64-ucrt-x86_64-MinHook \
   mingw-w64-ucrt-x86_64-nlohmann-json
 
 git clone <repo-url> cosmic-desk && cd cosmic-desk
@@ -273,7 +275,8 @@ ninja -C build
 
 Note: the exact Boost component set and any extra Sunshine deps are confirmed at
 vendoring time from the pinned tag's `docs/building.md` — VENDOR.md records the final
-package list.
+package list. MinHook (`libMinHook.a`, `find_library(... REQUIRED)` in
+`host/sunshine/CMakeLists.txt`) is a confirmed extra Sunshine dependency on Windows.
 
 ### Linux (Ubuntu 24.04)
 
@@ -288,7 +291,11 @@ sudo apt update && sudo apt install -y \
   libx11-dev libxfixes-dev libxrandr-dev libxtst-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
   libdrm-dev libcap-dev libevdev-dev libudev-dev \
   libpulse-dev libva-dev \
-  libayatana-appindicator3-dev libgtk-3-dev libnotify-dev
+  libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
+  python3-pip python3-setuptools
+
+# glad generator needs Python + jinja2 at build time (host/sunshine CMake checks it)
+pip3 install jinja2 setuptools
 
 git clone <repo-url> cosmic-desk && cd cosmic-desk
 git submodule update --init --recursive

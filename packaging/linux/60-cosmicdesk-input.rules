@@ -1,0 +1,3 @@
+# Cosmic Desk - allow users to inject input via the uinput device (inputtino).
+# Install to /etc/udev/rules.d/ and run: udevadm control --reload-rules && udevadm trigger
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"

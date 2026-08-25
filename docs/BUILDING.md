@@ -43,8 +43,13 @@ pacman -S --needed \
   mingw-w64-ucrt-x86_64-curl \
   mingw-w64-ucrt-x86_64-expat \
   mingw-w64-ucrt-x86_64-opus \
-  mingw-w64-ucrt-x86_64-boost
+  mingw-w64-ucrt-x86_64-boost \
+  mingw-w64-ucrt-x86_64-MinHook
 ```
+
+`libMinHook.a` (required by `host/sunshine/CMakeLists.txt` via
+`find_library(MINHOOK_LIBRARY libMinHook.a REQUIRED)`) comes from the
+`mingw-w64-ucrt-x86_64-MinHook` package above.
 
 **If a download stalls** ("Operation too slow"), just run the same `pacman -S` command
 again — partial downloads are cached and resumed. The MSYS2 mirrors are occasionally
@@ -80,7 +85,15 @@ sudo apt install -y \
   libx11-dev libxfixes-dev libxrandr-dev libxtst-dev \
   libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
   libdrm-dev libcap-dev libevdev-dev libudev-dev \
-  libpulse-dev libva-dev libnotify-dev
+  libpulse-dev libva-dev libnotify-dev \
+  python3-pip python3-setuptools
+```
+
+The glad generator (used by the Linux VAAPI build) needs Python with jinja2 and
+setuptools at configure time, so also run:
+
+```bash
+pip3 install jinja2 setuptools
 ```
 
 Then:
@@ -113,3 +126,4 @@ start capture; log in with an "Ubuntu on Xorg" session.
 | Build succeeds but the app fails to start with a missing DLL | Running the exe outside the MSYS2 environment | Run from the UCRT64 shell, or bundle DLLs (see `packaging/windows/`, milestone M6) |
 | Tray icon missing | `assets/` not next to the executable | The build copies it automatically; re-run `ninja -C build` |
 | Port already in use | Stock Sunshine is installed and holding 47989 | Change `port_base` in the app settings (`cosmic.json`) |
+| Windows Firewall prompt on first launch | The host listens on the six GameStream ports | Allow the prompt (private networks) or add an inbound rule; the ports are listed in `docs/PROTOCOL.md` |

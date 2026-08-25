@@ -6,6 +6,9 @@
 
 #include "app/settings.h"
 #include "app/state.h"
+#include "hostglue/host.h"
+#include "hostglue/pin_bridge.h"
+#include "ui/pin_dialog.h"
 #include "ui/tray.h"
 
 #include <SDL.h>
@@ -85,6 +88,13 @@ int main(int argc, char** argv) {
         // Materialize defaults on first run so the file is there to be edited.
         settings.save();
     }
+
+    if (!cosmic::hostglue::start(settings)) {
+        // Hosting is degraded but the app keeps running (plan M1.4): the UI and
+        // viewer role still work, and the host log explains what failed.
+        std::fprintf(stderr, "Hosting failed to start; continuing without it.\n");
+    }
+
     cosmic::AppMode mode = start_hidden ? cosmic::AppMode::HiddenToTray : cosmic::AppMode::MainWindow;
     bool running = true;
 
@@ -110,6 +120,12 @@ int main(int argc, char** argv) {
     }
 
     bool show_imgui_demo = false;
+
+    // Pending pairing state (plan M1.4): set when the host thread reports a
+    // /pair request; consumed by the PIN dialog below.
+    std::string g_pending_client;
+    bool show_pin_dialog = false;
+    bool pin_result_ok = false;
 
     while (running) {
         SDL_Event event;
@@ -144,6 +160,19 @@ int main(int argc, char** argv) {
             break;
         }
 
+        // Surface pending pairing requests from the host thread (plan M1.4).
+        // The vendored tray library cannot raise a notification, so the window
+        // itself is shown and raised instead.
+        std::string polled_client;
+        while (cosmic::pin_bridge::poll(polled_client)) {
+            g_pending_client = std::move(polled_client);
+            show_pin_dialog = true;
+            pin_result_ok = false;
+            mode = cosmic::AppMode::MainWindow;
+            SDL_ShowWindow(window);
+            SDL_RaiseWindow(window);
+        }
+
         if (mode == cosmic::AppMode::HiddenToTray) {
             // Nothing to draw; stay responsive to tray clicks without burning a core.
             SDL_Delay(50);
@@ -159,7 +188,7 @@ int main(int argc, char** argv) {
         ImGui::Begin("Cosmic Desk");
         // Keep UI strings ASCII-only: the default ImGui font has no glyphs
         // beyond Basic Latin, so anything else renders as '?'.
-        ImGui::TextUnformatted("Milestone 0 - scaffold is alive.");
+        ImGui::TextUnformatted("Cosmic Desk is running.");
         ImGui::Separator();
         ImGui::Text("Config file: %s", cosmic::Settings::config_file().string().c_str());
         ImGui::Text("Host port base: %d", settings.port_base);
@@ -177,6 +206,12 @@ int main(int argc, char** argv) {
             ImGui::ShowDemoWindow(&show_imgui_demo);
         }
 
+        if (show_pin_dialog) {
+            cosmic::ui::draw_pin_dialog(g_pending_client, show_pin_dialog, pin_result_ok);
+            // When pin_result_ok is set, nvhttp::pin() completed the handshake
+            // server-side and the client is paired.
+        }
+
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 18, 18, 22, 255);
         SDL_RenderClear(renderer);
@@ -192,6 +227,7 @@ int main(int argc, char** argv) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    cosmic::hostglue::stop();
     SDL_Quit();
     return 0;
 }

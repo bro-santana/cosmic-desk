@@ -3,6 +3,8 @@ name: build
 # Build-only CI: catches compile breakage on both target platforms per commit.
 # There are no unit tests yet - the streaming stack needs real hardware to
 # exercise, so verification is the manual matrix described in PLAN.md section 9.
+# Since M1 the host is built too, so the full host dependency set from
+# PLAN.md section 6 is installed here.
 
 on:
   push:
@@ -32,6 +34,13 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-expat
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-MinHook
             mingw-w64-ucrt-x86_64-nlohmann-json
 
       - name: Configure
@@ -52,9 +61,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config \
+            build-essential cmake ninja-build pkg-config git \
             libsdl2-dev nlohmann-json3-dev \
-            libayatana-appindicator3-dev libgtk-3-dev
+            libavcodec-dev libavutil-dev libswscale-dev libavfilter-dev \
+            libssl-dev libcurl4-openssl-dev libexpat1-dev libopus-dev \
+            libboost-dev libboost-log-dev libboost-locale-dev libboost-program-options-dev \
+            libx11-dev libxfixes-dev libxrandr-dev libxtst-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libdrm-dev libcap-dev libevdev-dev libudev-dev \
+            libpulse-dev libva-dev \
+            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
+            python3-pip python3-setuptools
+
+      - name: Install Python build deps
+        run: sudo pip install --break-system-packages jinja2 setuptools
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
