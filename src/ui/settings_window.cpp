@@ -5,6 +5,7 @@
 #include "ui/settings_window.h"
 
 #include "app/autostart.h"
+#include "ui/scale.h"
 
 #include <imgui.h>
 
@@ -59,7 +60,7 @@ void draw_settings_window(Settings &settings, bool &open) {
   }
   was_open = open;
 
-  ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(420 * scale(), 0), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoSavedSettings)) {
     // Resolution mode combo: the index maps 1:1 onto the ResolutionMode enum.
     int mode_index = static_cast<int>(settings.resolution_mode);

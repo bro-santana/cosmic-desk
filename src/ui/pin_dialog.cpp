@@ -4,6 +4,7 @@
 #include "ui/pin_dialog.h"
 
 #include "hostglue/pin_bridge.h"
+#include "ui/scale.h"
 
 #include <imgui.h>
 
@@ -46,7 +47,7 @@ void draw_pin_dialog(const std::string &client_name, bool &open, bool &result_ok
   ImGui::TextUnformatted("Enter the 4-digit PIN shown on the client:");
 
   // Center the PIN field under the text.
-  const float field_width = 120.0f;
+  const float field_width = 120.0f * scale();
   ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - field_width) * 0.5f);
   ImGui::SetNextItemWidth(field_width);
   ImGui::InputText("##pin", pin_buffer, kPinBufferSize, ImGuiInputTextFlags_CharsDecimal);
@@ -56,8 +57,8 @@ void draw_pin_dialog(const std::string &client_name, bool &open, bool &result_ok
   ImGui::Separator();
 
   // Center the OK/Cancel buttons.
-  const float button_width = 80.0f;
-  const float button_spacing = 8.0f;
+  const float button_width = 80.0f * scale();
+  const float button_spacing = 8.0f * scale();
   const float buttons_width = button_width * 2.0f + button_spacing;
   ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - buttons_width) * 0.5f);
 

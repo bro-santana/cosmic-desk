@@ -83,6 +83,7 @@ add_executable(cosmicdesk
     src/hostglue/pin_bridge.cpp
     src/hostglue/displays.cpp
     src/ui/pin_dialog.cpp
+    src/ui/scale.cpp
     src/ui/settings_window.cpp
     src/ui/tray.cpp
     src/ui/viewer_topbar.cpp

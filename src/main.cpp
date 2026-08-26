@@ -9,6 +9,7 @@
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
 #include "ui/pin_dialog.h"
+#include "ui/scale.h"
 #include "ui/settings_window.h"
 #include "ui/tray.h"
 #include "ui/viewer_topbar.h"
@@ -226,6 +227,34 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
+    // HiDPI (see ui/scale.h): the DPI-awareness hint above gives us the raw
+    // pixel grid, so ImGui has to be told the display scale or everything it
+    // draws comes out at 96-DPI sizes on a 4K panel. Must follow the backend
+    // init: rebuilding the atlas drops the backend's font texture.
+    cosmic::ui::apply(window);
+    // The window was created at 96-DPI sizes; grow it to match, but never past
+    // the display's usable area (a 2.25x scale would otherwise ask for a
+    // 2250x1440 window on a 1920x1080 screen).
+    {
+        const float ui_scale = cosmic::ui::scale();
+        SDL_Rect usable = {0, 0, 0, 0};
+        const int display = SDL_GetWindowDisplayIndex(window);
+        if (display < 0 || SDL_GetDisplayUsableBounds(display, &usable) != 0) {
+            usable.w = 0;
+            usable.h = 0;
+        }
+        int width = static_cast<int>(kWindowWidth * ui_scale);
+        int height = static_cast<int>(kWindowHeight * ui_scale);
+        if (usable.w > 0 && width > usable.w) {
+            width = usable.w;
+        }
+        if (usable.h > 0 && height > usable.h) {
+            height = usable.h;
+        }
+        SDL_SetWindowSize(window, width, height);
+        SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+
     cosmic::Settings settings = cosmic::Settings::load();
     if (!std::filesystem::exists(cosmic::Settings::config_file())) {
         // Materialize defaults on first run so the file is there to be edited.
@@ -318,6 +347,16 @@ int main(int argc, char** argv) {
                 continue;
             }
             ImGui_ImplSDL2_ProcessEvent(&event);
+
+            // Dragged to a monitor with a different DPI: rescale the font and
+            // the style so the UI keeps its physical size (see ui/scale.h).
+            // Safe here — events are pumped before ImGui::NewFrame(), so the
+            // font atlas is never rebuilt mid-frame.
+            if (event.type == SDL_WINDOWEVENT &&
+                event.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED &&
+                event.window.windowID == SDL_GetWindowID(window)) {
+                cosmic::ui::apply(window);
+            }
 
             // Closing the window (X button or SDL_QUIT) means "get out of the
             // way", not "stop hosting" — that is what the tray Quit item is
@@ -524,8 +563,11 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(560, 320), ImGuiCond_FirstUseEver);
+        const float ui_scale = cosmic::ui::scale();
+        ImGui::SetNextWindowPos(ImVec2(20 * ui_scale, 20 * ui_scale),
+                                ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(560 * ui_scale, 320 * ui_scale),
+                                 ImGuiCond_FirstUseEver);
         ImGui::Begin("Cosmic Desk");
         // Keep UI strings ASCII-only: the default ImGui font has no glyphs
         // beyond Basic Latin, so anything else renders as '?'.

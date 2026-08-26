@@ -4,6 +4,8 @@
 
 #include "ui/viewer_topbar.h"
 
+#include "ui/scale.h"
+
 #include <SDL.h>
 #include <imgui.h>
 
@@ -30,7 +32,7 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
   const float mouse_x = io.MousePos.x - viewport->Pos.x;
   const float mouse_y = io.MousePos.y - viewport->Pos.y;
   const bool in_zone = mouse_x >= 0.0f && mouse_x < viewport->Size.x &&
-                       mouse_y >= 0.0f && mouse_y < kTopBarZone;
+                       mouse_y >= 0.0f && mouse_y < kTopBarZone * scale();
 
   // Auto-hide: the bar shows while the mouse is inside the top zone and hides
   // 2 s after the last motion there (or immediately when the mouse leaves).
@@ -55,7 +57,8 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
   // nav so the stream keeps keyboard input; main.cpp's WantCaptureMouse gate
   // already stops forwarding while the cursor is over the bar.
   ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kTopBarHeight), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kTopBarHeight * scale()),
+                           ImGuiCond_Always);
   ImGui::Begin("ViewerTopBar", nullptr,
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoSavedSettings |
