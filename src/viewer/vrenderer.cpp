@@ -49,6 +49,16 @@ void vrenderer_render(SDL_Renderer* renderer, AVFrame* frame) {
 void vrenderer_present_no_frame(SDL_Renderer* renderer) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
+    // Redraw the last decoded frame instead of leaving the cleared black.
+    // decoder_acquire_frame() hands out each frame once, and the main loop
+    // presents at the display's refresh rate (120 Hz) while video arrives at
+    // 60 fps, so most iterations have no new frame. Without this the stream
+    // alternates image/black and flickers at half the refresh rate. The
+    // streaming texture still holds the last upload, so re-presenting it is
+    // free. Before the first frame there is no texture and the black stands.
+    if (g_texture != nullptr) {
+        SDL_RenderCopy(renderer, g_texture, nullptr, nullptr);
+    }
 }
 
 void vrenderer_deinit() {
