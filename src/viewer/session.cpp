@@ -95,7 +95,38 @@ void Session::start_connect(const std::string& host_ip, int port) {
     if (worker_thread_.joinable()) {
         worker_thread_.join();  // Previous worker already finished.
     }
-    worker_thread_ = std::thread(&Session::worker, this, host_ip, port);
+    // Snapshot the stream settings on the main thread before the worker starts
+    // (plan M4.4): the user can keep editing sliders mid-connect, and reading
+    // the plain scalar members from the worker would race those writes. The
+    // worker gets this copy by value.
+    StreamPrefs prefs;
+    switch (settings_.resolution_mode) {
+    case ResolutionMode::HostNative:
+        // M5 resolves host-native from /serverinfo; 1920x1080 for now.
+        prefs.width = 1920;
+        prefs.height = 1080;
+        break;
+    case ResolutionMode::R1080p:
+        prefs.width = 1920;
+        prefs.height = 1080;
+        break;
+    case ResolutionMode::R1440p:
+        prefs.width = 2560;
+        prefs.height = 1440;
+        break;
+    case ResolutionMode::R2160p:
+        prefs.width = 3840;
+        prefs.height = 2160;
+        break;
+    case ResolutionMode::Custom:
+        prefs.width = settings_.custom_width;
+        prefs.height = settings_.custom_height;
+        break;
+    }
+    prefs.fps = settings_.fps;
+    prefs.bitrate_kbps = settings_.bitrate_kbps;
+
+    worker_thread_ = std::thread(&Session::worker, this, host_ip, port, prefs);
 }
 
 void Session::end_session() {
@@ -122,7 +153,7 @@ bool Session::is_streaming() const {
     return status_.state == ViewerState::Streaming;
 }
 
-void Session::worker(std::string host_ip, int port) {
+void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
     // server.serverInfo.address points into this buffer for the whole session,
     // so it must outlive gs_init and stay put.
     std::vector<char> address(host_ip.begin(), host_ip.end());
@@ -217,21 +248,21 @@ void Session::worker(std::string host_ip, int port) {
         return;
     }
 
-    // Hardcoded M2 stream config (plan M2.2): 1920x1080@60, 20 Mbps, H.264.
-    // packetSize/streamingRemotely/encryptionFlags mirror moonlight-embedded's
-    // config.c defaults (1392 bytes, STREAM_CFG_AUTO, ENCFLG_ALL for CPUs with
-    // AES-NI, which every x86-64 CPU since ~2011 has).
+    // Stream config from the settings snapshot taken at connect start
+    // (plan M4.4). packetSize/streamingRemotely/encryptionFlags mirror
+    // moonlight-embedded's config.c defaults (1392 bytes, STREAM_CFG_AUTO,
+    // ENCFLG_ALL for CPUs with AES-NI, which every x86-64 CPU since ~2011 has).
     STREAM_CONFIGURATION stream_config;
     LiInitializeStreamConfiguration(&stream_config);
-    stream_config.width = 1920;
-    stream_config.height = 1080;
-    stream_config.fps = 60;
-    stream_config.bitrate = 20000;
+    stream_config.width = prefs.width;
+    stream_config.height = prefs.height;
+    stream_config.fps = prefs.fps;
+    stream_config.bitrate = prefs.bitrate_kbps;
     stream_config.packetSize = 1392;
     stream_config.streamingRemotely = STREAM_CFG_AUTO;
     stream_config.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
     stream_config.supportedVideoFormats = VIDEO_FORMAT_H264;
-    stream_config.clientRefreshRateX100 = 6000;  // 60 Hz display
+    stream_config.clientRefreshRateX100 = prefs.fps * 100;  // display refresh x100
     stream_config.encryptionFlags = ENCFLG_ALL;
 
     const int start_ret = gs_start_app(&server, &stream_config, app_id,

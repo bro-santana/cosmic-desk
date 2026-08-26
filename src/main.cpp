@@ -9,7 +9,9 @@
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
 #include "ui/pin_dialog.h"
+#include "ui/settings_window.h"
 #include "ui/tray.h"
+#include "ui/viewer_topbar.h"
 #include "viewer/decoder.h"
 #include "viewer/input.h"
 #include "viewer/session.h"
@@ -48,6 +50,48 @@ const char* tray_icon_name() {
 #else
     return "icon.png";  // AppIndicator takes a png path
 #endif
+}
+
+// Applies or releases the keyboard grab (plan M4.3). While grabbed, Alt+Tab
+// and the Win key act on the remote machine; SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4
+// keeps Alt+F4 from closing the window (Windows-only hint, harmless elsewhere).
+void apply_input_grab(SDL_Window* window, bool grabbed) {
+    SDL_SetWindowKeyboardGrab(window, grabbed ? SDL_TRUE : SDL_FALSE);
+#ifdef _WIN32
+    SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, grabbed ? "1" : "0");
+#endif
+}
+
+// Leaves the Viewing UI (plan M4.3): flush held input, release the keyboard
+// grab, restore the hints Viewing changed, and tear down the video renderer.
+// Used both when the session ends and when the window is hidden to the tray
+// mid-stream (the session keeps running in the background). Idempotent: each
+// step is guarded by the state it owns, so a second call is a no-op.
+void leave_viewing_ui(SDL_Window* window, bool* input_grabbed,
+                      bool* vrenderer_active) {
+    // Exit fullscreen for the main window UI, keep viewer_fullscreen for next
+    // session.
+    SDL_SetWindowFullscreen(window, 0);
+    // Release anything still held, then drop the grab so the host does not
+    // keep stuck keys (moonlight-qt raiseAllKeys pattern). Flushing is
+    // independent of the grab: keys can be held even when the grab is off.
+    cosmic::viewer::input::flush_input_state();
+    if (*input_grabbed) {
+        apply_input_grab(window, false);
+        *input_grabbed = false;
+    }
+    // Restore the hints Viewing changed: minimize-on-focus-loss back to the
+    // default "1", and the Alt+F4 close hint back to "0" (apply_input_grab
+    // already reset the latter when releasing the grab, but restore it
+    // explicitly in case the grab was already off).
+    SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "1");
+#ifdef _WIN32
+    SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "0");
+#endif
+    if (*vrenderer_active) {
+        cosmic::viewer::vrenderer_deinit();
+        *vrenderer_active = false;
+    }
 }
 
 // Viewer session (plan M2.2): one session object for the whole app lifetime;
@@ -139,10 +183,25 @@ int main(int argc, char** argv) {
     }
 
     bool show_imgui_demo = false;
+    bool show_settings = false;
 
     // Viewer renderer is created lazily once the negotiated stream dimensions
     // are known and destroyed when leaving Viewing mode (plan M2.4).
     bool vrenderer_active = false;
+
+    // Viewer fullscreen state (plan M4.2): kept across sessions — the user's
+    // last choice sticks. Applied via SDL_SetWindowFullscreen after the frame.
+    bool viewer_fullscreen = false;
+
+    // Keyboard-grab state (plan M4.3): while true, SDL_SetWindowKeyboardGrab
+    // captures Alt+Tab / Win so they act on the remote machine. Toggled by the
+    // Ctrl+Alt+Shift+Z escape combo; SDL releases the grab implicitly on focus
+    // loss, so the logical state and the SDL state can briefly disagree.
+    bool input_grabbed = false;
+
+    // Top-bar auto-hide state (plan M4.1): persists across frames while
+    // streaming.
+    cosmic::ui::TopBarState topbar_state;
 
     // Pending pairing state (plan M1.4): set when the host thread reports a
     // /pair request; consumed by the PIN dialog below.
@@ -152,38 +211,65 @@ int main(int argc, char** argv) {
 
     while (running) {
         SDL_Event event;
+        // Set by the Ctrl+Alt+Shift+Q/Enter/Z escape combos while streaming;
+        // applied after the frame (fullscreen changes and session teardown
+        // must not happen mid-ImGui-frame).
+        cosmic::viewer::input::InputActions input_actions;
         while (SDL_PollEvent(&event)) {
             // While streaming, forward input to the host before ImGui sees it
             // (plan M2.6). Consumed events never reach ImGui. The overlay's
             // "End session" button still works because ImGui claims mouse
             // capture when the cursor is over it (WantCaptureMouse), which
-            // gates forwarding; the Ctrl+Alt+Shift+Q escape combo stays active
-            // regardless of the capture state.
+            // gates forwarding; the Ctrl+Alt+Shift+Q/Enter/Z escape combos
+            // stay active regardless of the capture state.
             if (mode == cosmic::AppMode::Viewing &&
                 cosmic::viewer::input::handle_event(
-                    event, *g_session, window, ImGui::GetIO().WantCaptureKeyboard,
-                    ImGui::GetIO().WantCaptureMouse)) {
+                    event, window, ImGui::GetIO().WantCaptureKeyboard,
+                    ImGui::GetIO().WantCaptureMouse, &input_actions)) {
                 continue;
             }
             ImGui_ImplSDL2_ProcessEvent(&event);
 
-            if (event.type == SDL_QUIT) {
-                // Closing the last window means "get out of the way", not
-                // "stop hosting" — that is what the tray Quit item is for.
+            // Closing the window (X button or SDL_QUIT) means "get out of the
+            // way", not "stop hosting" — that is what the tray Quit item is
+            // for.
+            const bool close_requested =
+                event.type == SDL_QUIT ||
+                (event.type == SDL_WINDOWEVENT &&
+                 event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                 event.window.windowID == SDL_GetWindowID(window));
+            if (close_requested) {
                 if (has_tray) {
+                    // Hiding to the tray mid-stream leaves the Viewing UI:
+                    // release the grab, flush held input, restore the hints,
+                    // and tear down the video renderer so the host does not
+                    // keep stuck keys. The session keeps running in the
+                    // background (close to tray = get out of the way).
+                    if (mode == cosmic::AppMode::Viewing ||
+                        g_session->status().state ==
+                            cosmic::viewer::ViewerState::Streaming) {
+                        leave_viewing_ui(window, &input_grabbed,
+                                         &vrenderer_active);
+                    }
                     mode = cosmic::AppMode::HiddenToTray;
                     SDL_HideWindow(window);
                 } else {
                     running = false;
                 }
             } else if (event.type == SDL_WINDOWEVENT &&
-                       event.window.event == SDL_WINDOWEVENT_CLOSE &&
-                       event.window.windowID == SDL_GetWindowID(window)) {
-                if (has_tray) {
-                    mode = cosmic::AppMode::HiddenToTray;
-                    SDL_HideWindow(window);
-                } else {
-                    running = false;
+                       mode == cosmic::AppMode::Viewing) {
+                // Keyboard-grab lifecycle (plan M4.3): SDL releases the grab
+                // implicitly on focus loss, so re-apply it on focus gain and
+                // flush held keys on focus loss so the host does not keep
+                // stuck keys (moonlight-qt notifyFocusLost pattern). The
+                // flush is unconditional: keys can be held even when the grab
+                // is off (the user may have toggled it), and their key-ups
+                // would otherwise never reach the host.
+                if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED &&
+                    input_grabbed) {
+                    apply_input_grab(window, true);
+                } else if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                    cosmic::viewer::input::flush_input_state();
                 }
             }
         }
@@ -214,12 +300,24 @@ int main(int argc, char** argv) {
         cosmic::viewer::SessionStatus session_status = g_session->status();
         if (session_status.state == cosmic::viewer::ViewerState::Streaming) {
             if (mode != cosmic::AppMode::HiddenToTray) {
+                if (mode != cosmic::AppMode::Viewing) {
+                    // Entering Viewing: keep the fullscreen video visible when
+                    // the app loses focus (moonlight-qt pattern) — SDL would
+                    // otherwise minimize the window mid-stream. Restored to
+                    // the default "1" when leaving Viewing below.
+                    SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+                    // Grab the keyboard so Alt+Tab / Win act on the remote
+                    // machine (plan M4.3).
+                    input_grabbed = true;
+                    apply_input_grab(window, true);
+                }
                 mode = cosmic::AppMode::Viewing;
             }
         } else if (mode == cosmic::AppMode::Viewing) {
             mode = cosmic::AppMode::MainWindow;
-            cosmic::viewer::vrenderer_deinit();
-            vrenderer_active = false;
+            // Leaving Viewing: flush held input, release the grab, restore
+            // the hints, and tear down the video renderer.
+            leave_viewing_ui(window, &input_grabbed, &vrenderer_active);
             SDL_ShowWindow(window);
         }
 
@@ -260,6 +358,14 @@ int main(int argc, char** argv) {
             ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
 
+            // Top bar (plan M4.1): drawn after the video so it sits above it,
+            // before the centered placeholder overlay. The returned action is
+            // applied after the ImGui frame below — SDL_SetWindowFullscreen
+            // and end_session() must not run mid-frame. M5: pass the real
+            // host monitor count from CosmicDisplays.
+            const cosmic::ui::TopBarAction topbar_action =
+                cosmic::ui::draw_topbar(&topbar_state, viewer_fullscreen, 1);
+
             const ImVec2 display = ImGui::GetIO().DisplaySize;
             ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f),
                                     ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -279,6 +385,33 @@ int main(int argc, char** argv) {
             ImGui::Render();
             ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
             SDL_RenderPresent(renderer);
+
+            // Apply top-bar and escape-combo actions after the ImGui frame:
+            // toggling fullscreen resizes the window, ending the session
+            // tears down the stream, and toggling the grab changes SDL input
+            // state, all unsafe mid-frame.
+            if (input_actions.fullscreen ||
+                topbar_action.kind == cosmic::ui::TopBarAction::ToggleFullscreen) {
+                viewer_fullscreen = !viewer_fullscreen;
+                SDL_SetWindowFullscreen(
+                    window, viewer_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+            }
+            if (input_actions.quit ||
+                topbar_action.kind == cosmic::ui::TopBarAction::Exit) {
+                g_session->end_session();
+            }
+            if (input_actions.toggle_grab) {
+                input_grabbed = !input_grabbed;
+                if (input_grabbed) {
+                    apply_input_grab(window, true);
+                } else {
+                    // Release anything still held before ungrab so the host
+                    // does not keep stuck keys (moonlight-qt
+                    // KeyComboUngrabInput pattern).
+                    cosmic::viewer::input::flush_input_state();
+                    apply_input_grab(window, false);
+                }
+            }
             continue;
         }
 
@@ -312,6 +445,10 @@ int main(int argc, char** argv) {
             if (g_host_ip_input[0] != '\0') {
                 g_session->start_connect(g_host_ip_input, settings.port_base);
             }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Settings")) {
+            show_settings = !show_settings;
         }
         // Recent hosts (plan M3.3): clicking one fills the IP field; the
         // Connect button starts the session as usual.
@@ -349,6 +486,11 @@ int main(int argc, char** argv) {
             // When pin_result_ok is set, nvhttp::pin() completed the handshake
             // server-side and the client is paired.
         }
+
+        // Called every frame, not just while open: draw_settings_window
+        // early-returns when the window is closed and saves pending edits on
+        // that transition (plan M4.4).
+        cosmic::ui::draw_settings_window(settings, show_settings);
 
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 18, 18, 22, 255);

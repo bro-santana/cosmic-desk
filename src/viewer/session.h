@@ -35,6 +35,16 @@ enum class ViewerState {
 
 const char* to_string(ViewerState state);
 
+// Snapshot of the stream-affecting settings taken on the main thread when a
+// connection starts (plan M4.4). The worker thread gets a copy by value so it
+// never reads the live Settings scalars while the user edits them mid-connect.
+struct StreamPrefs {
+    int width = 1920;
+    int height = 1080;
+    int fps = 60;
+    int bitrate_kbps = 20000;
+};
+
 struct SessionStatus {
     ViewerState state = ViewerState::Idle;
     std::string message;
@@ -56,7 +66,8 @@ public:
 
     // Async: spawns the worker thread. No-op if a session is already active
     // or the address is empty. port is the host HTTP port (settings.port_base;
-    // 0 or negative falls back to 47989).
+    // 0 or negative falls back to 47989). The stream preferences are snapshotted
+    // here, on the main thread, and passed to the worker by value.
     void start_connect(const std::string& host_ip, int port);
 
     // Async-safe request to stop: sets the end flag and calls LiStopConnection()
@@ -69,7 +80,7 @@ public:
     bool is_streaming() const;
 
 private:
-    void worker(std::string host_ip, int port);
+    void worker(std::string host_ip, int port, StreamPrefs prefs);
     bool session_ended() const;
     void set_status(ViewerState state, const std::string& message,
                     const std::string& pin = "", int port_used = 0);
