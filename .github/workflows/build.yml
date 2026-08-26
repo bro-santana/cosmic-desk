@@ -35,6 +35,9 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
+          # Full history: the packaging steps version themselves from
+          # `git describe --tags`, which sees nothing in a shallow clone.
+          fetch-depth: 0
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -57,7 +60,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ntldd
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build
@@ -66,11 +69,43 @@ jobs:
         shell: msys2 {0}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/make-zip.ps1
 
+      - name: Build Windows installer
+        shell: powershell
+        run: |
+          function Find-Iscc {
+              $found = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+              if ($found) { return $found.FullName }
+              $cmd = Get-Command ISCC -ErrorAction SilentlyContinue
+              if ($cmd) { return $cmd.Source }
+              return $null
+          }
+          # The windows runner image ships Inno Setup; choco is only a fallback
+          # for images that drop it.
+          $isccPath = Find-Iscc
+          if (-not $isccPath) {
+              choco install innosetup --no-progress -y
+              $isccPath = Find-Iscc
+          }
+          if (-not $isccPath) { throw "ISCC.exe not found, and 'choco install innosetup' did not provide it" }
+          # No version defines here: installer.iss includes
+          # build\packaging\windows\version.iss, which the Configure step wrote
+          # from cmake/CosmicDeskVersion.cmake.
+          & $isccPath packaging\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Upload Windows bundle
         uses: actions/upload-artifact@v4
         with:
           name: cosmicdesk-windows-x64
           path: dist/CosmicDesk-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmicdesk-windows-x64-setup
+          path: dist/CosmicDesk-windows-x64-setup.exe
           if-no-files-found: error
 
   linux:
@@ -81,12 +116,15 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
+          # Full history: the packaging steps version themselves from
+          # `git describe --tags`, which sees nothing in a shallow clone.
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config git \
+            build-essential cmake ninja-build pkg-config git dpkg-dev \
             libsdl2-dev nlohmann-json3-dev \
             libavcodec-dev libavutil-dev libswscale-dev libavfilter-dev \
             libssl-dev libcurl4-openssl-dev libexpat1-dev libopus-dev \
@@ -102,7 +140,8 @@ jobs:
         run: sudo pip install --break-system-packages jinja2 setuptools
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        # /usr prefix so the .desktop Exec path matches where the deb installs.
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 
       - name: Build
         run: cmake --build build
@@ -115,4 +154,14 @@ jobs:
         with:
           name: cosmicdesk-linux-x64
           path: build/dist-linux/cosmicdesk-linux-x64.tar.gz
+          if-no-files-found: error
+
+      - name: Package Linux deb
+        run: bash packaging/linux/make-deb.sh
+
+      - name: Upload Linux deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmicdesk-linux-deb
+          path: build/dist-deb/cosmicdesk_*_amd64.deb
           if-no-files-found: error

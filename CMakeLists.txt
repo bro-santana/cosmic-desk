@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
-project(cosmic-desk LANGUAGES C CXX)
+
+# The release version is derived from git once and shared with the packaging
+# scripts; see cmake/CosmicDeskVersion.cmake. Included before project() so the
+# derived numeric triple can be passed to it.
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+include(CosmicDeskVersion)
+
+project(cosmic-desk VERSION ${COSMICDESK_VERSION} LANGUAGES C CXX)
+
+# Writes build/packaging/version.env and build/packaging/windows/version.iss,
+# which make-deb.sh and installer.iss read instead of re-deriving the version.
+cosmicdesk_write_version_files()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)

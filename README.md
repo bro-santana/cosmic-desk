@@ -43,6 +43,22 @@ See [`docs/BUILDING.md`](docs/BUILDING.md). In short:
   requires GCC/Clang), then `cmake -B build -G Ninja && ninja -C build`.
 - **Linux:** install the listed `apt` packages, then the same CMake commands.
 
+## Releases
+
+Tagged (`v*`) releases are published from CI on the
+[releases page](https://github.com/bro-santana/cosmic-desk/releases), each carrying:
+
+- `CosmicDesk-windows-x64.zip` — self-contained Windows bundle (unzip and run)
+- `CosmicDesk-windows-x64-setup.exe` — Inno Setup per-user installer (unsigned;
+  SmartScreen will warn)
+- `cosmicdesk-linux-x64.tar.gz` — Linux tarball (no root required; udev rule is manual)
+- `cosmicdesk_<version>_amd64.deb` — Debian package for **Ubuntu 24.04+**
+  (`sudo apt install ./cosmicdesk_<version>_amd64.deb`; input injection works out of
+  the box)
+
+A rolling `nightly` prerelease carries the same four artifacts from the `develop`
+branch.
+
 ## Documentation
 
 | Document | Contents |

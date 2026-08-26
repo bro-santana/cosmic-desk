@@ -456,17 +456,23 @@ uninterrupted; 10× switch loop survives; no stuck modifiers on host (type to co
    CosmicDesk = "<exe> --hidden"`; Linux — `~/.config/autostart/cosmicdesk.desktop`
    (`Exec=cosmicdesk --hidden`). `--hidden` starts to tray. Optional systemd user unit
    documented as alternative.
-2. Windows packaging: `make-zip.ps1` bundling exe + MinGW DLLs (`ntldd -R`); Inno
-   Setup optional stretch.
-3. Linux packaging: install target, .desktop files, udev rule + instructions; tarball.
-4. Docs: finish `VENDOR.md`; README — what it is, GPL-3.0, **Code provenance table**
+2. Windows packaging: `make-zip.ps1` bundling exe + MinGW DLLs (`ntldd -R`);
+   Inno Setup installer (`installer.iss`) for the per-user setup exe.
+3. Linux packaging: install target, .desktop files, udev rule + instructions;
+   tarball (`make-tarball.sh`) and Debian package (`make-deb.sh`, udev rule
+   activated, `Depends:` via `dpkg-shlibdeps`).
+4. Release plumbing: CI publishes zip + setup exe + tarball + deb on `v*` tags and
+   the rolling `nightly` prerelease; CI builds are Release-mode. The version is
+   derived once by `cmake/CosmicDeskVersion.cmake` (`git describe`) and handed to
+   the packaging scripts through the build tree, so no script re-derives it.
+5. Docs: finish `VENDOR.md`; README — what it is, GPL-3.0, **Code provenance table**
    (every §7 row), WAN port-forwarding table, session-0/UAC limitation, Linux X11-only
    + udev note, build links.
 
-**Accept:** fresh Windows machine (no MSYS2): unzip → run → works; autostart on →
-reboot → tray present → another machine pairs and connects. Fresh Ubuntu 24.04:
-someone other than the developer follows README alone → same result. README provenance
-table covers every row of §7.
+**Accept:** fresh Windows machine (no MSYS2): unzip or run the setup exe → runs;
+autostart on → reboot → tray present → another machine pairs and connects. Fresh
+Ubuntu 24.04: someone other than the developer follows README alone (or installs the
+deb) → same result. README provenance table covers every row of §7.
 
 ## 9. Verification strategy
 

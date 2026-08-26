@@ -77,6 +77,24 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\make-zip.ps1
 The script is `packaging/windows/make-zip.ps1`; it produces
 `dist\CosmicDesk-windows-x64.zip` (exe + assets + MinGW DLLs + LICENSE + README).
 
+To produce an Inno Setup installer from that bundle (requires Inno Setup 6 or 7,
+`ISCC.exe` on PATH), run from the repo root:
+
+```bash
+ISCC.exe packaging\windows\installer.iss
+```
+
+The script is `packaging/windows/installer.iss`; it produces
+`dist\CosmicDesk-windows-x64-setup.exe`, with Start Menu and optional desktop
+shortcuts and an uninstaller. It defaults to a per-user install into
+`%LocalAppData%\Programs\Cosmic Desk` with no admin/UAC prompt; the first
+wizard page offers a machine-wide install under `Program Files` instead, which
+is also reachable as `setup.exe /ALLUSERS` (and `/CURRENTUSER` to force the
+default). No version is passed on the command line — it comes from
+`build\packaging\windows\version.iss`, so the build must be configured first
+(see [Versioning](#versioning)). The installer is unsigned; SmartScreen will
+warn until a code-signing certificate is set up.
+
 ## Linux (Ubuntu 24.04)
 
 ```bash
@@ -156,6 +174,57 @@ Alternatively, `packaging/linux/make-tarball.sh` installs the same rules into a 
 prefix and produces a self-contained `build/dist-linux/cosmicdesk-linux-x64.tar.gz`
 (no root required). Input injection still needs the udev rule copied manually as shown
 above.
+
+For a Debian package, `packaging/linux/make-deb.sh [VERSION]` stages the same rules and
+builds `build/dist-deb/cosmicdesk_<version>_amd64.deb` (install with
+`sudo apt install ./cosmicdesk_<version>_amd64.deb`). Differences from the tarball: it
+installs into `/usr` (configure the build with `-DCMAKE_INSTALL_PREFIX=/usr` so the
+`.desktop` Exec path matches, as CI does), the udev rule is installed into
+`/usr/lib/udev/rules.d/` so input injection works out of the box, and `Depends:` is
+computed with `dpkg-shlibdeps`, so the package targets the same distribution it is
+built on (CI builds on Ubuntu 24.04; older releases need a rebuild there). The
+`VERSION` argument is optional and only overrides the version CMake derived (see
+[Versioning](#versioning)).
+
+## Versioning
+
+The release version is derived **once**, by `cmake/CosmicDeskVersion.cmake`, from
+`git describe --tags --long --always` at configure time. Nothing else runs `git
+describe` — that is how the Windows installer and the Debian package would end up
+disagreeing about what they are.
+
+CMake writes the derived value into the build tree in the two forms the packaging
+scripts need:
+
+| Generated file | Read by | Variable |
+|---|---|---|
+| `build/packaging/version.env` | `packaging/linux/make-deb.sh` | `COSMICDESK_VERSION_DEB` |
+| `build/packaging/windows/version.iss` | `packaging/windows/installer.iss` | `AppVersion`, `VersionInfoVersion` |
+
+Four shapes are derived, because the packaging formats disagree about what a version
+may look like:
+
+| Tag state | `_VERSION` | `_FULL` | `_INFO` (Windows) | `_DEB` |
+|---|---|---|---|---|
+| on `v1.2.3` | `1.2.3` | `1.2.3` | `1.2.3.0` | `1.2.3` |
+| 3 commits past `v1.2.3` | `1.2.3` | `1.2.3-3-gabc1234` | `1.2.3.3` | `1.2.3+3+gabc1234` |
+| 2 commits past `v2.0.0-rc1` | `2.0.0` | `2.0.0-rc1-2-gabc1234` | `2.0.0.2` | `2.0.0~rc1+2+gabc1234` |
+| no tag reachable | `0.0.0` | `0.0.0+gabc1234` | `0.0.0.0` | `0.0.0+gabc1234` |
+
+The commit count is the fourth Windows `VERSIONINFO` field, so successive nightlies
+are distinguishable instead of all reporting `0.0.0.0`. In the Debian version a
+pre-release tag's hyphen becomes `~` (`2.0.0~rc1` sorts *before* `2.0.0`, which is
+what such a tag means) and the remaining separators become `+`, since dpkg reads the
+last hyphen as the `debian_revision` separator.
+
+Two consequences worth knowing:
+
+- **CI must check out full history.** `git describe` sees no tags in a shallow clone,
+  so both jobs in `.github/workflows/build.yml` set `fetch-depth: 0`. Without it every
+  build silently reports `0.0.0`.
+- Re-running CMake is what refreshes the version, so the module registers `.git/HEAD`
+  and the branch ref as configure dependencies — committing locally re-runs configure
+  on the next build.
 
 ## Common problems
 

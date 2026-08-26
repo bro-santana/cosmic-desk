@@ -2,7 +2,7 @@
 Type=Application
 Name=Cosmic Desk
 Comment=Remote desktop host and viewer (Moonlight protocol)
-Exec=@CMAKE_INSTALL_FULL_LIBDIR@/cosmicdesk
+Exec=@CMAKE_INSTALL_FULL_LIBDIR@/cosmicdesk/cosmicdesk
 Icon=cosmicdesk
 Terminal=false
 Categories=Network;RemoteAccess;
