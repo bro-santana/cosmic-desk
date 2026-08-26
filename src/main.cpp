@@ -28,10 +28,55 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <limits.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 constexpr int kWindowWidth = 1000;
 constexpr int kWindowHeight = 640;
+
+// The vendored host resolves SUNSHINE_ASSETS_DIR="assets" (HLSL/GL shaders)
+// relative to the CWD, and autostart/menu launches don't set it; chdir makes
+// the packaged layout work. Failure is silent: keep the original CWD.
+void chdir_to_executable_dir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        std::fprintf(stderr, "chdir: GetModuleFileNameW failed (%lu)\n",
+                     GetLastError());
+        return;
+    }
+    // Strip the filename, keep the directory.
+    if (wchar_t* slash = wcsrchr(buf, L'\\'); slash != nullptr) {
+        *slash = L'\0';
+    }
+    if (!SetCurrentDirectoryW(buf)) {
+        std::fprintf(stderr, "chdir: SetCurrentDirectoryW failed (%lu)\n",
+                     GetLastError());
+    }
+#else
+    char buf[PATH_MAX];
+    const ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        std::fprintf(stderr, "chdir: readlink(/proc/self/exe) failed\n");
+        return;
+    }
+    buf[len] = '\0';
+    // Strip the filename, keep the directory.
+    if (char* slash = strrchr(buf, '/'); slash != nullptr) {
+        *slash = '\0';
+    }
+    if (chdir(buf) != 0) {
+        std::fprintf(stderr, "chdir: chdir(%s) failed\n", buf);
+    }
+#endif
+}
 
 std::string asset_path(const char* file_name) {
     std::string path;
@@ -131,6 +176,10 @@ int main(int argc, char** argv) {
             start_hidden = true;
         }
     }
+
+    // Run from the executable's directory so the vendored host's CWD-relative
+    // SUNSHINE_ASSETS_DIR="assets" resolves regardless of how we were launched.
+    chdir_to_executable_dir();
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());

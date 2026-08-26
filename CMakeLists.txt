@@ -77,6 +77,7 @@ target_link_libraries(cosmic_moonlight_common PRIVATE
 # ---------------------------------------------------------------------------
 add_executable(cosmicdesk
     src/main.cpp
+    src/app/autostart.cpp
     src/app/settings.cpp
     src/hostglue/host.cpp
     src/hostglue/pin_bridge.cpp
@@ -147,3 +148,28 @@ add_custom_command(TARGET cosmicdesk POST_BUILD
             $<TARGET_FILE_DIR:cosmicdesk>/assets
     COMMENT "Copying assets next to cosmicdesk"
 )
+
+# ---------------------------------------------------------------------------
+# Linux packaging (plan M6.3). Install rules are UNIX-only: on Windows the
+# bundle is produced by packaging/windows/make-zip.ps1 instead. Everything
+# lives in one self-contained dir next to the binary
+# (${CMAKE_INSTALL_LIBDIR}/cosmicdesk), mirroring the Windows bundle; the menu
+# entry and udev rule go to their standard share/ locations. The udev rule is
+# installed into share/cosmicdesk but NOT activated - users copy it to
+# /etc/udev/rules.d/ themselves (see docs/BUILDING.md).
+# packaging/linux/make-tarball.sh wraps these rules into a self-contained
+# tarball.
+# ---------------------------------------------------------------------------
+if(UNIX AND NOT APPLE)
+    include(GNUInstallDirs)
+    # The .desktop Exec must point at the real install prefix (default
+    # /usr/local, not /usr), so it is generated from a template at configure
+    # time. GNUInstallDirs defines CMAKE_INSTALL_FULL_LIBDIR.
+    configure_file(packaging/linux/cosmicdesk.desktop.in
+                   ${CMAKE_BINARY_DIR}/packaging/linux/cosmicdesk.desktop @ONLY)
+    install(TARGETS cosmicdesk RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/cosmicdesk)
+    install(DIRECTORY assets/ DESTINATION ${CMAKE_INSTALL_LIBDIR}/cosmicdesk/assets)
+    install(FILES ${CMAKE_BINARY_DIR}/packaging/linux/cosmicdesk.desktop DESTINATION share/applications)
+    install(FILES packaging/linux/60-cosmicdesk-input.rules DESTINATION share/cosmicdesk)
+    install(FILES assets/icon.png DESTINATION share/icons/hicolor/64x64/apps RENAME cosmicdesk.png)
+endif()

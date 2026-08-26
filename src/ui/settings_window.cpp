@@ -4,6 +4,8 @@
 
 #include "ui/settings_window.h"
 
+#include "app/autostart.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -36,9 +38,16 @@ void draw_settings_window(Settings &settings, bool &open) {
   // saves at shutdown, so a clean exit never loses changes either way.
   static bool was_open = false;
   static bool dirty = false;
+  // ImGui time until which the autostart failure line stays visible (0 = not
+  // showing). Set on a failed set_enabled() toggle, cleared on success.
+  static double autostart_error_until = 0.0;
 
   if (open && !was_open) {
     dirty = false;  // Freshly opened: nothing changed yet.
+    // One-time sync on open: reflect the real OS autostart state (the
+    // settings file may be out of sync after manual edits). User edits
+    // still apply on toggle.
+    settings.autostart = cosmic::autostart::enabled();
   }
   if (!open) {
     if (was_open && dirty) {
@@ -96,7 +105,23 @@ void draw_settings_window(Settings &settings, bool &open) {
     if (ImGui::Checkbox("Autostart", &settings.autostart)) {
       dirty = true;
     }
-    ImGui::TextWrapped("Wired in a later milestone.");
+    // The checkbox stays bound to settings.autostart; on window open nothing
+    // is auto-applied, because the settings file may be out of sync with the
+    // actual OS state after manual edits (acceptable for v1). The OS is only
+    // touched when the user actually toggles the checkbox.
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+      if (cosmic::autostart::set_enabled(settings.autostart)) {
+        autostart_error_until = 0.0;
+      } else {
+        autostart_error_until = ImGui::GetTime() + 5.0;
+      }
+    }
+    ImGui::TextWrapped("Starts Cosmic Desk minimized to the tray when you log in.");
+    ImGui::TextWrapped("Per-user logon autostart, not a Windows service.");
+    if (ImGui::GetTime() < autostart_error_until) {
+      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                         "Failed to update autostart (see log).");
+    }
 
     ImGui::Separator();
     ImGui::TextWrapped("Changes are saved to cosmic.json when this window closes.");

@@ -1,7 +1,9 @@
 // Cosmic Desk — settings window (plan M4.4). Edits the live app-wide Settings
 // object: resolution mode, custom resolution, FPS, bitrate, port base, and the
 // autostart flag. Changes apply immediately and are persisted to cosmic.json
-// when the window closes.
+// when the window closes. Toggling the autostart checkbox also applies the
+// change to the OS (HKCU Run key / XDG autostart file) via
+// cosmic::autostart::set_enabled.
 
 #pragma once
 

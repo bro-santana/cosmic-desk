@@ -1,6 +1,7 @@
 build/
 build-*/
 out/
+dist/
 .cache/
 compile_commands.json
 *.user

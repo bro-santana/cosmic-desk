@@ -66,6 +66,17 @@ ninja -C build
 ./build/cosmicdesk.exe
 ```
 
+To produce a self-contained zip (no MSYS2 needed on the target machine), run the
+bundling script from the repo root in the **UCRT64** shell — it needs `ntldd`
+installed for DLL discovery:
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\windows\make-zip.ps1
+```
+
+The script is `packaging/windows/make-zip.ps1`; it produces
+`dist\CosmicDesk-windows-x64.zip` (exe + assets + MinGW DLLs + LICENSE + README).
+
 ## Linux (Ubuntu 24.04)
 
 ```bash
@@ -117,6 +128,34 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 **Linux capture is X11-only for v1.** On a Wayland session the host role will refuse to
 start capture; log in with an "Ubuntu on Xorg" session.
+
+### Install
+
+After a successful build, install the binary and support files system-wide with:
+
+```bash
+sudo cmake --install build
+```
+
+This installs into `/usr/local` by default:
+
+- `<libdir>/cosmicdesk/cosmicdesk` — the executable (`/usr/local/lib/...` by
+  default; `lib64` on some distros)
+- `<libdir>/cosmicdesk/assets/` — runtime assets (icons, capture shaders), kept
+  next to the binary in one self-contained dir (mirrors the Windows bundle)
+- `share/applications/cosmicdesk.desktop` — the application-menu entry
+  (generated at configure time so its Exec path always matches the prefix)
+- `share/icons/hicolor/64x64/apps/cosmicdesk.png` — the menu icon
+- `share/cosmicdesk/60-cosmicdesk-input.rules` — the udev rule (not activated; see above)
+
+The binary chdirs to its own directory at startup, so the CWD-relative
+`assets/` path the vendored host uses for its shaders resolves regardless of
+how the app is launched (terminal, menu, or autostart).
+
+Alternatively, `packaging/linux/make-tarball.sh` installs the same rules into a staging
+prefix and produces a self-contained `build/dist-linux/cosmicdesk-linux-x64.tar.gz`
+(no root required). Input injection still needs the udev rule copied manually as shown
+above.
 
 ## Common problems
 

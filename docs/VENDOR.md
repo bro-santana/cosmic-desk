@@ -31,7 +31,7 @@ licensed. The repository's `LICENSE` file is GPL-3.0.
 | nvapi (NVIDIA NVAPI headers, used by the vendored `nvprefs` code) | https://github.com/NVIDIA/nvapi (MIT) | commit `9b181ea572f680327fe01a14a0f1f41c78034104` | Vendored, unmodified | `third-party/nvapi/` |
 | glad (GL/EGL loader generator, Linux VAAPI) | https://github.com/Dav1dde/glad (MIT; Khronos spec headers Apache-2.0) | commit `73db193f853e2ee079bf3ca8a64aa2eaf6459043` | Vendored, unmodified | `third-party/glad/` |
 | inputtino (Linux uinput injection) | https://github.com/games-on-whales/inputtino (MIT) | commit `f4ce2b0df536ef309e9ff318f75b460f7097d7c1` | Submodule, unmodified | `third-party/inputtino/` |
-| Sunshine DXGI HLSL capture shaders | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` | Vendored, unmodified | `assets/shaders/` |
+| Sunshine capture shaders (DXGI HLSL + OpenGL) | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` | Vendored, unmodified | `assets/shaders/` (`directx/` for the Windows DXGI capture, `opengl/` for the Linux GL capture) |
 | libgamestream (client pairing: `client.c`, `http.c`, `mkcert.c`, `xml.c`) | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | tag `v2.7.1`, commit `775444287305849ebdf4736c75298ad0713e2d5d` | Vendored, **modified** | `third-party/libgamestream/` |
 | FFmpeg decode + SDL render + Opus audio playback structure | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | tag `v2.7.1`, commit `775444287305849ebdf4736c75298ad0713e2d5d` | Pattern | `src/viewer/decoder.cpp`, `src/viewer/vrenderer.cpp`, `src/viewer/audio.cpp` |
 | SDL scancode → Windows VK table (`input/keymap.cpp`) | https://github.com/moonlight-stream/moonlight-qt (GPL-3.0) | tag `v6.1.0`, commit `f786e94c7b2f943e24e65d7d74deb539b827fc84` | Pattern/lifted, adapted | `src/viewer/keymap.cpp` (+ `src/viewer/input.cpp` follows the same upstream's input handling pattern) |
@@ -119,6 +119,17 @@ comment):
    `COSMIC MODIFICATION` in the source: `<arpa/inet.h>` → `<winsock2.h>`
    (for `htonl`), two-argument `mkdir()` → `_mkdir()` (from `<direct.h>`),
    and BSD `u_int32_t` → standard `uint32_t`.
+4. **`http.c` timeouts.** Upstream leaves curl's connect and total timeouts at
+   their OS defaults, so an unreachable host hangs the viewer worker thread for
+   minutes. Cosmic Desk sets `CURLOPT_CONNECTTIMEOUT` to 5 s and `CURLOPT_TIMEOUT`
+   to 30 s so the worker regains control on unresponsive hosts or a pairing that
+   parks forever waiting for PIN approval (marked `COSMIC MODIFICATION` in
+   `http.c`).
+5. **`<CosmicDisplays>` parsing.** `xml.c` gains an expat handler that reads the
+   `CosmicVersion`/`CosmicDisplays` block from `/serverinfo` (plan D3a/M5.1) into a
+   `COSMIC_DISPLAY` list; `client.c` invokes it during `gs_init` and frees the
+   list; the types and the refresh-only `/serverinfo` fetch (plan M5.3) live in
+   `client.h`/`xml.h` (all marked `COSMIC MODIFICATION`).
 
 ## Diffing a vendored component against upstream
 
