@@ -309,7 +309,10 @@ namespace platf {
     }
 #endif
 
-    BOOST_LOG(warning) << "Unable to find MAC address for "sv << address;
+    // COSMIC MODIFICATION: not finding the MAC is expected for loopback/VPN/
+    // virtual adapters, and root.mac is informational anyway (Moonlight ignores
+    // it), so log at debug instead of spamming a warning.
+    BOOST_LOG(debug) << "Unable to find MAC address for "sv << address;
     return "00:00:00:00:00:00"s;
   }
 
