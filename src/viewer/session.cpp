@@ -111,22 +111,8 @@ Session::~Session() {
 }
 
 void Session::start_connect(const std::string& host_ip, int port) {
-    {
-        std::lock_guard lock(mutex_);
-        if (worker_running_ || host_ip.empty()) {
-            return;  // A session is already active, or there is nothing to do.
-        }
-        session_ended_ = false;
-        stage_failed_ = false;
-        stage_failed_message_.clear();
-        connection_terminated_ = false;
-        active_display_pinned_ = false;
-        termination_error_ = 0;
-        termination_message_.clear();
-        worker_running_ = true;
-    }
-    if (worker_thread_.joinable()) {
-        worker_thread_.join();  // Previous worker already finished.
+    if (!begin_worker(host_ip, port, SessionMode::Stream)) {
+        return;  // A session is already active, or there is nothing to do.
     }
     // Snapshot the stream settings on the main thread before the worker starts
     // (plan M4.4): the user can keep editing sliders mid-connect, and reading
@@ -140,7 +126,51 @@ void Session::start_connect(const std::string& host_ip, int port) {
     prefs.fps = settings_.fps;
     prefs.bitrate_kbps = settings_.bitrate_kbps;
 
-    worker_thread_ = std::thread(&Session::worker, this, host_ip, port, prefs);
+    worker_thread_ =
+        std::thread(&Session::worker, this, host_ip, port, prefs, SessionMode::Stream);
+}
+
+void Session::start_pair(const std::string& address, int port) {
+    if (!begin_worker(address, port, SessionMode::Pair)) {
+        return;  // A session is already active, or there is nothing to do.
+    }
+    // Pair mode never streams, so the StreamPrefs are unused (defaults).
+    worker_thread_ =
+        std::thread(&Session::worker, this, address, port, StreamPrefs{},
+                    SessionMode::Pair);
+}
+
+bool Session::begin_worker(const std::string& host_ip, int port, SessionMode mode) {
+    (void)mode;  // The shared body does not branch on mode; start_* pass it on.
+    {
+        std::lock_guard lock(mutex_);
+        if (worker_running_ || host_ip.empty()) {
+            return false;  // A session is already active, or nothing to do.
+        }
+        session_ended_ = false;
+        stage_failed_ = false;
+        stage_failed_message_.clear();
+        connection_terminated_ = false;
+        active_display_pinned_ = false;
+        termination_error_ = 0;
+        termination_message_.clear();
+        worker_running_ = true;
+    }
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();  // Previous worker already finished.
+    }
+    // Publish "Connecting" synchronously on the calling thread, before
+    // std::thread(...): start_connect/start_pair return before the worker's own
+    // set_status(Connecting) at the top of worker() runs, so without this the
+    // status latch would keep reading the previous terminal state (Idle or
+    // Failed) for one or more frames, and the Pair modal would conclude it was
+    // done (or failed) the instant the user clicked Pair. The worker's own
+    // set_status stays — it is idempotent — and this removes the same latent
+    // flicker from the connect path.
+    const int http_port = port > 0 ? port : kHostHttpPort;
+    set_status(ViewerState::Connecting, "Connecting to " + host_ip + "...",
+               "", http_port);
+    return true;
 }
 
 void Session::end_session() {
@@ -164,6 +194,11 @@ SessionStatus Session::status() {
 bool Session::is_streaming() const {
     std::lock_guard lock(mutex_);
     return status_.state == ViewerState::Streaming;
+}
+
+bool Session::busy() const {
+    std::lock_guard lock(mutex_);
+    return worker_running_;
 }
 
 // COSMIC MODIFICATION (M5): re-fetches /serverinfo on a short-lived thread and
@@ -249,7 +284,8 @@ void Session::set_active_display(int index) {
     }
 }
 
-void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
+void Session::worker(std::string host_ip, int port, StreamPrefs prefs,
+                     SessionMode mode) {
     // RAII: guarantee worker_running_ is cleared on every exit path, including
     // the early returns below, so start_connect() can retry after a failed
     // connect. This destructor is the sole writer that clears the flag (the
@@ -305,10 +341,17 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
         status_.displays = displays_to_vector(server.displays);
         status_.active_display = active_display_index(status_.displays);
     }
-    // Host reachable: record it as a recent host (plan M3.3). Runs on the
-    // worker thread; add_recent_host is mutex-protected against the main
-    // thread's UI reads of the same Settings object.
-    settings_.add_recent_host(host_ip);
+    // Host reachable: record it in the managed host list (plan M3.3), running
+    // on the worker thread; add_or_update_host is mutex-protected against the
+    // main thread's UI reads of the same Settings object. The stored `paired`
+    // flag is refreshed with ground truth on every connect (so --connect <ip>
+    // still records the machine). Pair mode records nothing here — a machine
+    // joins the list only once the handshake actually succeeds, below. The
+    // worker's port is the *resolved* port and must never be written back as
+    // an override; add_or_update_host leaves port alone on update.
+    if (mode == SessionMode::Stream) {
+        settings_.add_or_update_host(host_ip, server.paired);
+    }
     if (session_ended()) {
         set_status(ViewerState::Idle, "Session ended", "", http_port);
         return;
@@ -329,6 +372,7 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
         return;
     }
 
+    const bool was_paired = server.paired;
     if (!server.paired) {
         const std::string pin = generate_pin();
         set_status(ViewerState::PairingNeedPin, "Enter this PIN on the host",
@@ -353,6 +397,26 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
             set_status(ViewerState::Idle, "Session ended", "", http_port);
             return;
         }
+    }
+
+    // Explicit Pair mode stops here, before the app list: the handshake (or
+    // the already-paired skip above) is the whole job. Placed after the pairing
+    // block it covers both outcomes — freshly paired, and already paired (the
+    // if(!server.paired) block was skipped, which is also why we never trip
+    // gs_pair's GS_WRONG_STATE "Already paired" path). Must NOT check
+    // session_ended() before recording: if the handshake succeeded, the machine
+    // really is paired, cancelled or not. Returning directly is safe and matches
+    // every existing early-return — s_active was never set, refresh_allowed_ is
+    // still false so no refresh thread can exist, no app was launched, and the
+    // RAII WorkerDone clears worker_running_ on the way out. The tail teardown
+    // below is only valid after refresh_allowed_ was set, so it must not run.
+    if (mode == SessionMode::Pair) {
+        settings_.add_or_update_host(host_ip, /*paired=*/true);
+        set_status(ViewerState::Idle,
+                   (was_paired ? "Already paired with " : "Paired with ") +
+                       host_ip,
+                   "", http_port);
+        return;
     }
 
     // Find the "Desktop" app. Sunshine's Desktop app is the one with an empty

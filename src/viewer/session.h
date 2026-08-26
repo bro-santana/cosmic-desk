@@ -46,6 +46,10 @@ enum class ViewerState {
 
 const char* to_string(ViewerState state);
 
+// What the worker is being asked to do. Pair runs the prologue and the PIN
+// handshake and stops; Stream continues into applist/launch/LiStartConnection.
+enum class SessionMode { Stream, Pair };
+
 // Snapshot of the stream-affecting settings taken on the main thread when a
 // connection starts (plan M4.4). The worker thread gets a copy by value so it
 // never reads the live Settings scalars while the user edits them mid-connect.
@@ -99,9 +103,15 @@ public:
 
     // Async: spawns the worker thread. No-op if a session is already active
     // or the address is empty. port is the host HTTP port (settings.port_base;
-    // 0 or negative falls back to 47989). The stream preferences are snapshotted
-    // here, on the main thread, and passed to the worker by value.
+    // 0 or negative falls back to 47989). The stream preferences are
+    // snapshotted here, on the main thread, and passed to the worker by value.
     void start_connect(const std::string& host_ip, int port);
+
+    // Async: like start_connect but the worker stops after the pairing
+    // handshake succeeds — it never fetches the app list or launches a stream.
+    // Used by the explicit Pair action; the auto-pair fallback stays on the
+    // connect path.
+    void start_pair(const std::string& address, int port);
 
     // Async-safe request to stop: sets the end flag and calls LiStopConnection()
     // to unblock the worker. Does not join the worker thread.
@@ -111,6 +121,11 @@ public:
     SessionStatus status();
 
     bool is_streaming() const;
+
+    // True while a worker is running (streaming, connecting, or pairing).
+    // is_streaming() is not enough: a pair worker is busy without ever being
+    // Streaming, and the Connect/Pair buttons must be disabled off this.
+    bool busy() const;
 
     // COSMIC MODIFICATION (M5): re-fetches /serverinfo on a short-lived thread
     // and updates the displays snapshot + active_display under the status
@@ -125,7 +140,13 @@ public:
     void set_active_display(int index);
 
 private:
-    void worker(std::string host_ip, int port, StreamPrefs prefs);
+    // Shared body of start_connect/start_pair: the busy check and state reset
+    // under the mutex, the join of a previous finished worker, and the
+    // synchronous publication of the Connecting status on the calling thread.
+    // Returns false (a no-op) if a worker is already running or the address is
+    // empty.
+    bool begin_worker(const std::string& host_ip, int port, SessionMode mode);
+    void worker(std::string host_ip, int port, StreamPrefs prefs, SessionMode mode);
     void refresh_worker();
     bool session_ended() const;
     void set_status(ViewerState state, const std::string& message,

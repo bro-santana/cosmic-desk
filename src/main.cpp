@@ -8,6 +8,7 @@
 #include "app/state.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
+#include "ui/host_list.h"
 #include "ui/pin_dialog.h"
 #include "ui/scale.h"
 #include "ui/settings_window.h"
@@ -145,12 +146,8 @@ void leave_viewing_ui(SDL_Window* window, bool* input_grabbed,
 // Viewer session (plan M2.2): one session object for the whole app lifetime;
 // its worker thread does all networking so the main loop never blocks. Created
 // in main() once the Settings object exists (the session needs it to record
-// recent hosts).
+// paired hosts).
 std::unique_ptr<cosmic::viewer::Session> g_session;
-// ASCII-only host IP input: the default ImGui font has no other glyphs, and
-// the vendored imgui has no std::string InputText overload (imgui_stdlib.h is
-// not vendored), so this is a fixed buffer.
-char g_host_ip_input[64] = {};
 
 // COSMIC MODIFICATION (M5): converts the session's display snapshot into the
 // top bar's monitor list. The UI layer (cosmic::ui) does not depend on the
@@ -297,8 +294,6 @@ int main(int argc, char** argv) {
     }
 
     if (!autoconnect_ip.empty()) {
-        std::snprintf(g_host_ip_input, sizeof(g_host_ip_input), "%s",
-                      autoconnect_ip.c_str());
         g_session->start_connect(autoconnect_ip, settings.port_base);
     }
 
@@ -322,6 +317,26 @@ int main(int argc, char** argv) {
     // Top-bar auto-hide state (plan M4.1): persists across frames while
     // streaming.
     cosmic::ui::TopBarState topbar_state;
+
+    // Managed host list (plan M3.x): persistent selection + modal state.
+    cosmic::ui::HostListState host_list_state;
+    // Pair latch: while an explicit Pair is in flight, the main loop turns the
+    // session status into a PairProgress for the Pair modal. pair_error is
+    // sticky — it stays set until the next StartPair, since state==Failed is
+    // true for only one frame.
+    bool pair_in_flight = false;
+    std::string pair_address;
+    // Port override the user chose in the Pair modal, applied only once the
+    // handshake succeeds. Nothing is written to the host list before then: an
+    // optimistic add would set paired=false on a machine that is already in the
+    // list (and an undo-on-failure would delete it, nickname and all) whenever
+    // the user re-pairs an existing entry.
+    int pair_port = 0;
+    // Optional nickname typed in the Pair modal, applied with the port once the
+    // handshake succeeds. Empty means "leave it alone", so re-pairing a machine
+    // that already has a nickname never clears it.
+    std::string pair_nickname;
+    std::string pair_error;
 
     // Pending pairing state (plan M1.4): set when the host thread reports a
     // /pair request; consumed by the PIN dialog below.
@@ -439,6 +454,50 @@ int main(int argc, char** argv) {
         // streaming, the window shows the viewer placeholder instead of the
         // main UI. Hiding to the tray still wins so tray behavior is kept.
         cosmic::viewer::SessionStatus session_status = g_session->status();
+        // Build the Pair modal's live feedback from the session status, and
+        // resolve the pair latch. This is only correct because begin_worker
+        // publishes Connecting synchronously, so the latch never sees a stale
+        // previous terminal state on the frame after Pair is clicked.
+        cosmic::ui::PairProgress pairing;
+        if (pair_in_flight) {
+            switch (session_status.state) {
+            case cosmic::viewer::ViewerState::Connecting:
+            case cosmic::viewer::ViewerState::PairingNeedPin:
+            case cosmic::viewer::ViewerState::PairingInProgress:
+                pairing.active = true;
+                pairing.show_pin =
+                    session_status.state != cosmic::viewer::ViewerState::Connecting;
+                pairing.pin = session_status.pin;
+                pairing.message = session_status.message;
+                break;
+            case cosmic::viewer::ViewerState::Failed:
+                // Clear the latch and make the error sticky. Nothing to undo:
+                // the pair worker only records a machine once the handshake has
+                // actually succeeded, so a failed pair leaves the list untouched
+                // (and an existing entry keeps its nickname and port override).
+                pair_in_flight = false;
+                pair_error = session_status.message;
+                break;
+            case cosmic::viewer::ViewerState::Idle:
+                // Handshake succeeded: the worker has added the machine with
+                // paired=true, so apply the port override the user chose, close
+                // the modal, and select the machine so Connect is one click away.
+                pair_in_flight = false;
+                host_list_state.pair_modal_open = false;
+                if (!pair_address.empty()) {
+                    settings.set_host_port(pair_address, pair_port);
+                    if (!pair_nickname.empty()) {
+                        settings.set_host_nickname(pair_address, pair_nickname);
+                    }
+                    host_list_state.selected = pair_address;
+                }
+                break;
+            case cosmic::viewer::ViewerState::Streaming:
+                break;  // Unreachable while pairing; pair-while-streaming is
+                        // excluded by busy() and AppMode::Viewing.
+            }
+        }
+        pairing.error = pair_error;
         if (session_status.state == cosmic::viewer::ViewerState::Streaming) {
             if (mode != cosmic::AppMode::HiddenToTray) {
                 if (mode != cosmic::AppMode::Viewing) {
@@ -602,34 +661,26 @@ int main(int argc, char** argv) {
         ImGui::Text("Bitrate: %d kbps", settings.bitrate_kbps);
         ImGui::Text("Tray: %s", has_tray ? "active" : "unavailable");
         ImGui::Separator();
-        ImGui::TextUnformatted("Connect to host");
-        ImGui::InputText("Host IP", g_host_ip_input, sizeof(g_host_ip_input));
-        if (ImGui::Button("Connect")) {
-            if (g_host_ip_input[0] != '\0') {
-                g_session->start_connect(g_host_ip_input, settings.port_base);
-            }
-        }
-        ImGui::SameLine();
+        // Managed host list (plan M3.x): pair/connect/edit/remove machines by
+        // name. Draws its own buttons and modals; returns an action applied
+        // after the frame. The Settings toggle stays here (there is no Settings
+        // action) so it reads naturally alongside the list's buttons.
+        const std::vector<cosmic::SavedHost> hosts_snapshot = settings.hosts_snapshot();
+        const cosmic::ui::HostListAction host_list_action = cosmic::ui::draw_host_list(
+            hosts_snapshot, pairing, settings.port_base, g_session->busy(),
+            &host_list_state);
         if (ImGui::Button("Settings")) {
             show_settings = !show_settings;
         }
-        // Recent hosts (plan M3.3): clicking one fills the IP field; the
-        // Connect button starts the session as usual.
-        const std::vector<std::string> recent_hosts = settings.recent_hosts_snapshot();
-        if (!recent_hosts.empty()) {
-            ImGui::TextUnformatted("Recent:");
-            for (const auto& host : recent_hosts) {
-                if (ImGui::Selectable(host.c_str())) {
-                    std::snprintf(g_host_ip_input, sizeof(g_host_ip_input), "%s",
-                                  host.c_str());
-                }
-            }
-        }
         ImGui::Text("Session: %s", cosmic::viewer::to_string(session_status.state));
         ImGui::TextWrapped("%s", session_status.message.c_str());
+        // Auto-pair fallback display (plan M3.x): while the Pair modal owns the
+        // explicit path, this inline block is the display for the auto-pair
+        // handshake that runs on the Connect path when the host forgot us.
+        // Gated on !pair_in_flight so the two never compete for the PIN.
         if ((session_status.state == cosmic::viewer::ViewerState::PairingNeedPin ||
              session_status.state == cosmic::viewer::ViewerState::PairingInProgress) &&
-            !session_status.pin.empty()) {
+            !session_status.pin.empty() && !pair_in_flight) {
             if (session_status.state == cosmic::viewer::ViewerState::PairingNeedPin) {
                 ImGui::TextUnformatted("Enter this PIN on the host:");
             }
@@ -664,6 +715,44 @@ int main(int argc, char** argv) {
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
+
+        // Apply host-list actions after the frame: the main-window branch falls
+        // off the end of the loop body, so this runs only for MainWindow mode.
+        // g_session->busy() was read mid-frame and can flip immediately after;
+        // worst case a button is enabled for one frame whose call then no-ops.
+        // Benign.
+        if (host_list_action.kind == cosmic::ui::HostListAction::Connect) {
+            g_session->start_connect(host_list_action.address,
+                                     settings.port_for(host_list_action.address));
+        } else if (host_list_action.kind == cosmic::ui::HostListAction::StartPair) {
+            // Nothing is persisted here — see pair_port above. The chosen port
+            // has to reach start_pair() before the entry exists, so resolve it
+            // directly: the override if set, else the global base.
+            pair_in_flight = true;
+            pair_address = host_list_action.address;
+            pair_port = host_list_action.port;
+            pair_nickname = host_list_action.nickname;
+            pair_error.clear();
+            g_session->start_pair(
+                host_list_action.address,
+                pair_port > 0 ? pair_port : settings.port_base);
+        } else if (host_list_action.kind == cosmic::ui::HostListAction::CancelPair) {
+            // The worker may stay parked in gs_pair for minutes; the modal keeps
+            // showing the "cancelling may take a moment" note until it exits.
+            g_session->end_session();
+        } else if (host_list_action.kind == cosmic::ui::HostListAction::ClosePair) {
+            host_list_state.pair_modal_open = false;
+            pair_error.clear();  // Reopening the modal starts clean.
+        } else if (host_list_action.kind == cosmic::ui::HostListAction::Remove) {
+            settings.remove_host(host_list_action.address);
+            if (host_list_state.selected == host_list_action.address) {
+                host_list_state.selected.clear();
+            }
+        } else if (host_list_action.kind == cosmic::ui::HostListAction::Edit) {
+            settings.set_host_nickname(host_list_action.address,
+                                       host_list_action.nickname);
+            settings.set_host_port(host_list_action.address, host_list_action.port);
+        }
     }
 
     settings.save();
@@ -672,7 +761,7 @@ int main(int argc, char** argv) {
     // the worker thread; the Session destructor joins it.
     g_session->end_session();
     // Destroy the session (and join its worker) here, while `settings` is still
-    // alive: the worker calls settings_.add_recent_host(), and g_session is a
+    // alive: the worker calls settings_.add_or_update_host(), and g_session is a
     // namespace-scope static whose destructor would otherwise run at static
     // destruction, after main()'s local `settings` is already gone.
     g_session.reset();

@@ -181,8 +181,9 @@ budgeted there. Escape hatch: restore LizardByte's prebuilt FFmpeg for the host 
 
 ### D6. Config & state locations
 - Windows: `%APPDATA%\CosmicDesk\`; Linux: `~/.config/cosmicdesk/` (respect
-  `$XDG_CONFIG_HOME`). Contents: `cosmic.json` (app/viewer settings: recent IPs,
-  bitrate, resolution mode, port_base, autostart flag — via nlohmann-json),
+  `$XDG_CONFIG_HOME`). Contents: `cosmic.json` (app/viewer settings: paired
+  host list with nicknames + port overrides, bitrate, resolution mode,
+  port_base, autostart flag — via nlohmann-json),
   `host.conf` (generated key=value consumed by Sunshine's `config.cpp`),
   `credentials/` (host TLS cert+key), `client/` (viewer cert+key from `mkcert.c`,
   paired server certs), host-side paired-clients state (Sunshine's existing format,
@@ -201,7 +202,7 @@ cosmic-desk/
 │   │   ├── state.{h,cpp}          # AppMode enum + transitions
 │   │   └── autostart.{h,cpp}      # HKCU Run key (Win) / XDG autostart .desktop (Linux)
 │   ├── ui/
-│   │   ├── main_window.cpp        # connect-by-IP screen, recent hosts list
+│   │   ├── host_list.cpp          # managed host list: pair/connect/nickname/remove
 │   │   ├── settings_window.cpp    # resolution/bitrate/port/autostart
 │   │   ├── pin_dialog.cpp         # ImGui modal; bridges to nvhttp::pin()
 │   │   ├── viewer_topbar.cpp      # monitor dropdown, fullscreen toggle, exit
@@ -412,7 +413,8 @@ restart works.
    preferred: point the vendored Sunshine at the submodule's enet, since it's the same
    shared fork).
 2. Our viewer's PIN screen ↔ our host's PIN dialog end-to-end.
-3. Main window: recent hosts from `cosmic.json`; status line ("Hosting on :47989 —
+3. Main window: managed host list from `cosmic.json` (pair/connect by name,
+   per-machine port override); status line ("Hosting on :47989 —
    1 client paired").
 
 **Accept:** two machines both running Cosmic Desk: A views B and B views A

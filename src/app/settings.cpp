@@ -13,6 +13,66 @@ namespace {
 
 const char* kResolutionNames[] = {"host", "1080p", "1440p", "2160p", "custom"};
 
+// Lifts the trim + case-insensitive compare that add_recent_host inlined into
+// file-local helpers; every SavedHost mutator and port_for need them.
+std::string trim(const std::string& s) {
+    const auto begin = s.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return "";
+    }
+    const auto end = s.find_last_not_of(" \t\r\n");
+    return s.substr(begin, end - begin + 1);
+}
+
+bool iequals(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                      [](char x, char y) {
+                          return std::tolower(static_cast<unsigned char>(x)) ==
+                                 std::tolower(static_cast<unsigned char>(y));
+                      });
+}
+
+std::vector<SavedHost>::iterator find_host(std::vector<SavedHost>& hosts,
+                                           const std::string& address) {
+    return std::find_if(hosts.begin(), hosts.end(),
+                        [&](const SavedHost& h) {
+                            return iequals(h.address, address);
+                        });
+}
+
+std::vector<SavedHost>::const_iterator find_host(
+    const std::vector<SavedHost>& hosts, const std::string& address) {
+    return std::find_if(hosts.begin(), hosts.end(),
+                        [&](const SavedHost& h) {
+                            return iequals(h.address, address);
+                        });
+}
+
+// nlohmann's json::value() throws type_error when a key exists with the wrong
+// type. load() deliberately parses with allow_exceptions=false so a corrupt or
+// hand-edited cosmic.json yields defaults rather than an error, but the scalar
+// reads used to defeat that: one mistyped value (say "fps": "60") threw out of
+// load() and terminated the app at startup with no message. Read every scalar
+// through a type check instead, the same way the hosts array is read below.
+int json_int(const nlohmann::json& json, const char* key, int fallback) {
+    const auto it = json.find(key);
+    return (it != json.end() && it->is_number()) ? it->get<int>() : fallback;
+}
+
+bool json_bool(const nlohmann::json& json, const char* key, bool fallback) {
+    const auto it = json.find(key);
+    return (it != json.end() && it->is_boolean()) ? it->get<bool>() : fallback;
+}
+
+std::string json_string(const nlohmann::json& json, const char* key,
+                        const std::string& fallback) {
+    const auto it = json.find(key);
+    return (it != json.end() && it->is_string()) ? it->get<std::string>() : fallback;
+}
+
 ResolutionMode resolution_from_string(const std::string& value) {
     for (int i = 0; i < 5; ++i) {
         if (value == kResolutionNames[i]) {
@@ -74,15 +134,61 @@ Settings Settings::load() {
         return settings;
     }
 
-    settings.port_base = json.value("port_base", settings.port_base);
+    settings.port_base = json_int(json, "port_base", settings.port_base);
     settings.resolution_mode =
-        resolution_from_string(json.value("resolution_mode", std::string("host")));
-    settings.custom_width = json.value("custom_width", settings.custom_width);
-    settings.custom_height = json.value("custom_height", settings.custom_height);
-    settings.fps = json.value("fps", settings.fps);
-    settings.bitrate_kbps = json.value("bitrate_kbps", settings.bitrate_kbps);
-    settings.autostart = json.value("autostart", settings.autostart);
-    settings.recent_hosts = json.value("recent_hosts", settings.recent_hosts);
+        resolution_from_string(json_string(json, "resolution_mode", "host"));
+    settings.custom_width = json_int(json, "custom_width", settings.custom_width);
+    settings.custom_height = json_int(json, "custom_height", settings.custom_height);
+    settings.fps = json_int(json, "fps", settings.fps);
+    settings.bitrate_kbps = json_int(json, "bitrate_kbps", settings.bitrate_kbps);
+    settings.autostart = json_bool(json, "autostart", settings.autostart);
+
+    // hosts is read by hand with contains()/is_*() guards: json.value() throws
+    // nlohmann::type_error when a key exists with the wrong type, even on a
+    // codepath parsed with allow_exceptions=false, and a hand-edited cosmic.json
+    // must never crash startup. Gate the legacy migration on contains("hosts"),
+    // not on hosts.empty(), so a user who deliberately removed every machine is
+    // not resurrected from an old recent_hosts list. Migration lands on disk at
+    // the first save() (main.cpp does that at shutdown); downgrading to an older
+    // build after migrating loses the list.
+    if (json.contains("hosts")) {
+        const auto& arr = json["hosts"];
+        if (arr.is_array()) {
+            for (const auto& entry : arr) {
+                if (!entry.is_object()) {
+                    continue;
+                }
+                SavedHost h;
+                if (entry.contains("address") && entry["address"].is_string()) {
+                    h.address = trim(entry["address"].get<std::string>());
+                }
+                if (entry.contains("nickname") && entry["nickname"].is_string()) {
+                    h.nickname = entry["nickname"].get<std::string>();
+                }
+                if (entry.contains("port") && entry["port"].is_number_integer()) {
+                    h.port = entry["port"].get<int>();
+                }
+                if (entry.contains("paired") && entry["paired"].is_boolean()) {
+                    h.paired = entry["paired"].get<bool>();
+                }
+                if (!h.address.empty()) {
+                    settings.hosts.push_back(std::move(h));
+                }
+            }
+        }
+    } else if (json.contains("recent_hosts") && json["recent_hosts"].is_array()) {
+        // Legacy: a flat string list becomes {address, "", 0, false} entries.
+        for (const auto& entry : json["recent_hosts"]) {
+            if (entry.is_string()) {
+                const std::string addr = trim(entry.get<std::string>());
+                if (!addr.empty()) {
+                    SavedHost h;
+                    h.address = addr;
+                    settings.hosts.push_back(std::move(h));
+                }
+            }
+        }
+    }
 
     return settings;
 }
@@ -95,46 +201,88 @@ Settings::Settings(Settings&& other) noexcept
       fps(other.fps),
       bitrate_kbps(other.bitrate_kbps),
       autostart(other.autostart),
-      recent_hosts(std::move(other.recent_hosts)) {}
+      hosts(std::move(other.hosts)) {}
 
-void Settings::add_recent_host(const std::string& host) {
+void Settings::add_or_update_host(const std::string& address, bool paired) {
     {
         std::lock_guard lock(mutex_);
-
-        // Trim surrounding whitespace; ignore empty/whitespace-only input.
-        const auto begin = host.find_first_not_of(" \t\r\n");
-        if (begin == std::string::npos) {
+        const std::string addr = trim(address);
+        if (addr.empty()) {
             return;
         }
-        const auto end = host.find_last_not_of(" \t\r\n");
-        std::string trimmed = host.substr(begin, end - begin + 1);
-
-        // Dedupe case-insensitively, then move the entry to the front.
-        auto it = std::find_if(
-            recent_hosts.begin(), recent_hosts.end(),
-            [&](const std::string& existing) {
-                return std::equal(
-                    trimmed.begin(), trimmed.end(), existing.begin(),
-                    existing.end(),
-                    [](char a, char b) {
-                        return std::tolower(static_cast<unsigned char>(a)) ==
-                               std::tolower(static_cast<unsigned char>(b));
-                    });
-            });
-        if (it != recent_hosts.end()) {
-            recent_hosts.erase(it);
-        }
-        recent_hosts.insert(recent_hosts.begin(), trimmed);
-        if (recent_hosts.size() > 10) {
-            recent_hosts.resize(10);
+        auto it = find_host(hosts, addr);
+        if (it != hosts.end()) {
+            // Update only touches `paired`, preserving nickname and port so a
+            // connect can never clobber the user's edits.
+            it->paired = paired;
+        } else {
+            // Insert appends; do not move-to-front — in a managed list that
+            // makes rows jump under the cursor. No cap: deliberately paired
+            // machines must not be silently evicted.
+            SavedHost h;
+            h.address = addr;
+            h.paired = paired;
+            hosts.push_back(std::move(h));
         }
     }
     save();
 }
 
-std::vector<std::string> Settings::recent_hosts_snapshot() const {
+bool Settings::remove_host(const std::string& address) {
+    {
+        std::lock_guard lock(mutex_);
+        const std::string addr = trim(address);
+        auto it = find_host(hosts, addr);
+        if (it == hosts.end()) {
+            return false;  // Nothing changed; skip the save().
+        }
+        hosts.erase(it);
+    }
+    save();
+    return true;
+}
+
+bool Settings::set_host_nickname(const std::string& address,
+                                 const std::string& nickname) {
+    {
+        std::lock_guard lock(mutex_);
+        const std::string addr = trim(address);
+        auto it = find_host(hosts, addr);
+        if (it == hosts.end()) {
+            return false;
+        }
+        it->nickname = nickname;  // Empty nickname clears it.
+    }
+    save();
+    return true;
+}
+
+bool Settings::set_host_port(const std::string& address, int port) {
+    {
+        std::lock_guard lock(mutex_);
+        const std::string addr = trim(address);
+        auto it = find_host(hosts, addr);
+        if (it == hosts.end()) {
+            return false;
+        }
+        it->port = port;  // 0 = follow the global port_base.
+    }
+    save();
+    return true;
+}
+
+std::vector<SavedHost> Settings::hosts_snapshot() const {
     std::lock_guard lock(mutex_);
-    return recent_hosts;
+    return hosts;
+}
+
+int Settings::port_for(const std::string& address) const {
+    std::lock_guard lock(mutex_);
+    auto it = find_host(hosts, trim(address));
+    if (it != hosts.end() && it->port > 0) {
+        return it->port;
+    }
+    return port_base;
 }
 
 bool Settings::save() const {
@@ -146,6 +294,17 @@ bool Settings::save() const {
         return false;
     }
 
+    std::vector<nlohmann::json> hosts_json;
+    hosts_json.reserve(hosts.size());
+    for (const SavedHost& h : hosts) {
+        hosts_json.push_back({
+            {"address", h.address},
+            {"nickname", h.nickname},
+            {"port", h.port},
+            {"paired", h.paired},
+        });
+    }
+
     const nlohmann::json json = {
         {"port_base", port_base},
         {"resolution_mode", to_string(resolution_mode)},
@@ -154,7 +313,7 @@ bool Settings::save() const {
         {"fps", fps},
         {"bitrate_kbps", bitrate_kbps},
         {"autostart", autostart},
-        {"recent_hosts", recent_hosts},
+        {"hosts", hosts_json},
     };
 
     std::ofstream file(config_file(), std::ios::trunc);
