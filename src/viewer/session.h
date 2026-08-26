@@ -4,12 +4,16 @@
 //
 // Threading model:
 //   - start_connect() spawns the worker thread and returns immediately.
-//   - The worker runs gs_init/gs_pair/gs_applist/gs_start_app and then blocks
-//     in LiStartConnection() for the whole session.
-//   - end_session() may be called from any thread: it sets a flag and calls
-//     LiStopConnection() (safe from any thread; moonlight-embedded does this
-//     from signal handlers) to unblock the worker. The worker then quits the
-//     app on the host and returns to Idle.
+//   - The worker runs gs_init/gs_pair/gs_applist/gs_start_app, then calls
+//     LiStartConnection(). That call does NOT block: it brings every stage up
+//     and returns, leaving the stream running on moonlight-common-c's own
+//     threads. The worker therefore parks on state_cv_ for the rest of the
+//     session and only then calls LiStopConnection().
+//   - end_session() may be called from any thread: it sets a flag and wakes
+//     the worker, which owns the LiStopConnection() call (Limelight documents
+//     LiStartConnection/LiStopConnection as not thread-safe, so they must be
+//     paired on one thread). The worker then quits the app on the host and
+//     returns to Idle.
 //   - status() returns a mutex-protected snapshot for the UI.
 
 #pragma once
@@ -18,6 +22,7 @@
 
 #include <Limelight.h>
 
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -152,11 +157,17 @@ private:
     static void on_audio_decode(char* sampleData, int sampleLength);
 
     mutable std::mutex mutex_;
+    // Signals the streaming worker that the session should come down, either
+    // because the user ended it or because the connection terminated itself.
+    std::condition_variable state_cv_;
     SessionStatus status_;
     std::thread worker_thread_;
     bool worker_running_ = false;
     bool session_ended_ = false;
     bool stage_failed_ = false;
+    // Set by the connectionTerminated callback; one of the two wake conditions
+    // the streaming worker waits on (session_ended_ is the other).
+    bool connection_terminated_ = false;
     std::string stage_failed_message_;
     int termination_error_ = 0;
     std::string termination_message_;

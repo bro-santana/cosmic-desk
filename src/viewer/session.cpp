@@ -119,6 +119,7 @@ void Session::start_connect(const std::string& host_ip, int port) {
         session_ended_ = false;
         stage_failed_ = false;
         stage_failed_message_.clear();
+        connection_terminated_ = false;
         termination_error_ = 0;
         termination_message_.clear();
         worker_running_ = true;
@@ -146,13 +147,12 @@ void Session::end_session() {
         std::lock_guard lock(mutex_);
         session_ended_ = true;
     }
-    // LiStopConnection() is safe to call from any thread (moonlight-embedded
-    // does this from signal handlers) and unblocks the worker thread blocked
-    // in LiStartConnection(). gs_quit_app() runs on the worker after
-    // LiStartConnection() returns. If the worker is mid-pairing (blocked in
-    // gs_pair), this is a no-op and the worker notices the end flag when
+    // Wake the streaming worker, which owns the LiStopConnection() call:
+    // Limelight documents LiStartConnection/LiStopConnection as not
+    // thread-safe, so stopping from here would race the worker. If the worker
+    // is instead mid-pairing (blocked in gs_pair), it picks the flag up when
     // gs_pair returns.
-    LiStopConnection();
+    state_cv_.notify_all();
 }
 
 SessionStatus Session::status() {
@@ -470,8 +470,25 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
         refresh_allowed_ = true;
     }
     set_status(ViewerState::Streaming, "Streaming", "", http_port);
-    LiStartConnection(&server.serverInfo, &stream_config, &conn, &video, &audio,
-                      nullptr, 0, nullptr, 0);
+    // LiStartConnection() is NOT a blocking call: it brings every stage up,
+    // fires connectionStarted() and returns, leaving the stream running on
+    // moonlight-common-c's own threads. Falling straight through would reach
+    // the LiStopConnection() below a few hundred milliseconds later and tear
+    // down the session that just came up, so park here until the session
+    // really ends: the user stopped it, or the connection terminated itself.
+    const int conn_ret = LiStartConnection(&server.serverInfo, &stream_config,
+                                           &conn, &video, &audio, nullptr, 0,
+                                           nullptr, 0);
+    if (conn_ret == 0) {
+        std::unique_lock lock(mutex_);
+        state_cv_.wait(lock, [this] {
+            return session_ended_ || connection_terminated_;
+        });
+    }
+    // A non-zero return means a stage failed and LiStartConnection() already
+    // unwound it (the stageFailed callback recorded the reason). Every stage
+    // is back at STAGE_NONE, so the LiStopConnection() below is a no-op on
+    // that path, which is what makes it correct for both.
     s_active = nullptr;
     {
         std::lock_guard lock(mutex_);
@@ -540,6 +557,10 @@ void Session::set_message(const std::string& message) {
 }
 
 void Session::set_stage_failed(const std::string& message) {
+    // Also to stderr: the UI shows this, but a session that fails while the
+    // window is hidden to the tray would otherwise leave no trace anywhere.
+    std::fprintf(stderr, "[session] %s\n", message.c_str());
+    std::fflush(stderr);
     std::lock_guard lock(mutex_);
     stage_failed_ = true;
     stage_failed_message_ = message;
@@ -547,8 +568,11 @@ void Session::set_stage_failed(const std::string& message) {
 }
 
 void Session::set_terminated(int error_code) {
+    std::string message;
+    {
     std::lock_guard lock(mutex_);
     termination_error_ = error_code;
+    connection_terminated_ = true;
     switch (error_code) {
     case ML_ERROR_GRACEFUL_TERMINATION:
         termination_message_ = "The host ended the session";
@@ -574,6 +598,13 @@ void Session::set_terminated(int error_code) {
         break;
     }
     status_.message = termination_message_;
+    message = termination_message_;
+    }
+    // Wakes the worker parked after LiStartConnection().
+    state_cv_.notify_all();
+    std::fprintf(stderr, "[session] terminated: %s (code %d)\n",
+                 message.c_str(), error_code);
+    std::fflush(stderr);
 }
 
 // --- connection listener callbacks (run on moonlight-common-c threads) ---

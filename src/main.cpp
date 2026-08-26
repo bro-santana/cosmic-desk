@@ -171,9 +171,16 @@ std::vector<cosmic::ui::MonitorInfo> to_monitor_info(
 
 int main(int argc, char** argv) {
     bool start_hidden = false;
+    // --connect <ip> starts a viewer session as soon as the app is up, without
+    // going through the window. Exists for the two-machine interop matrix
+    // (PLAN.md S9), which otherwise cannot be driven from a script.
+    std::string autoconnect_ip;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--hidden") {
+        const std::string arg = argv[i];
+        if (arg == "--hidden") {
             start_hidden = true;
+        } else if (arg == "--connect" && i + 1 < argc) {
+            autoconnect_ip = argv[++i];
         }
     }
 
@@ -256,6 +263,12 @@ int main(int argc, char** argv) {
 
     if (mode == cosmic::AppMode::MainWindow) {
         SDL_ShowWindow(window);
+    }
+
+    if (!autoconnect_ip.empty()) {
+        std::snprintf(g_host_ip_input, sizeof(g_host_ip_input), "%s",
+                      autoconnect_ip.c_str());
+        g_session->start_connect(autoconnect_ip, settings.port_base);
     }
 
     bool show_imgui_demo = false;
