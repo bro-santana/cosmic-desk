@@ -118,6 +118,8 @@ void leave_viewing_ui(SDL_Window* window, bool* input_grabbed,
     // Exit fullscreen for the main window UI, keep viewer_fullscreen for next
     // session.
     SDL_SetWindowFullscreen(window, 0);
+    // Undo the cursor hiding the Viewing UI applies over the video.
+    SDL_ShowCursor(SDL_ENABLE);
     // Release anything still held, then drop the grab so the host does not
     // keep stuck keys (moonlight-qt raiseAllKeys pattern). Flushing is
     // independent of the grab: keys can be held even when the grab is off.
@@ -512,6 +514,21 @@ int main(int argc, char** argv) {
             // whole session and swallowed mouse input wherever it covered
             // (WantCaptureMouse gates forwarding). Ending the session lives on
             // the top bar's Exit button and on Ctrl+Alt+Shift+Q.
+
+            // Hide the local pointer over the stream: the host composites its
+            // own cursor into the video, so drawing ours too shows two. This
+            // must go through ImGui, not SDL_ShowCursor() --
+            // ImGui_ImplSDL2_NewFrame() calls SDL_ShowCursor(SDL_TRUE) every
+            // frame unless ImGui's own cursor is None, so a direct hide is
+            // undone before the next frame is drawn. Keep the pointer while
+            // the top bar is up (its buttons have to be aimed at) and while
+            // the window is unfocused, so it is never lost on the way out.
+            const bool focused =
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+            if (focused && !topbar_state.visible) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+            }
+
             ImGui::Render();
             ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
             SDL_RenderPresent(renderer);
