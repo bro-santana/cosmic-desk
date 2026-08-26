@@ -228,6 +228,19 @@ void Session::set_active_display(int index) {
 }
 
 void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
+    // RAII: guarantee worker_running_ is cleared on every exit path, including
+    // the early returns below, so start_connect() can retry after a failed
+    // connect. This destructor is the sole writer that clears the flag (the
+    // tail only updates status_ under the mutex), so a concurrent
+    // start_connect() that saw false under the mutex keeps its true.
+    struct WorkerDone {
+        Session* s;
+        ~WorkerDone() {
+            std::lock_guard<std::mutex> lock(s->mutex_);
+            s->worker_running_ = false;
+        }
+    } worker_done{this};
+
     // server.serverInfo.address points into this buffer for the whole session,
     // so it must outlive gs_init and stay put.
     std::vector<char> address(host_ip.begin(), host_ip.end());
@@ -504,7 +517,6 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
             status_.state = ViewerState::Idle;
             status_.message = "Connection closed";
         }
-        worker_running_ = false;
     }
 }
 

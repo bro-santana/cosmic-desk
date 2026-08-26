@@ -181,6 +181,15 @@ int main(int argc, char** argv) {
     // SUNSHINE_ASSETS_DIR="assets" resolves regardless of how we were launched.
     chdir_to_executable_dir();
 
+#ifdef _WIN32
+    // Per-monitor-v2 DPI awareness: crisp rendering and correct scaling on
+    // HiDPI/mixed-DPI setups. Must be set before SDL_Init creates the video
+    // driver. SDL_WINDOW_ALLOW_HIGHDPI + the ImGui backends then report window
+    // sizes and mouse positions in the same (DPI-scaled) coordinate space, so
+    // the UI, the top bar, and the viewer's mouse mapping all line up.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -547,8 +556,12 @@ int main(int argc, char** argv) {
         }
         ImGui::Text("Session: %s", cosmic::viewer::to_string(session_status.state));
         ImGui::TextWrapped("%s", session_status.message.c_str());
-        if (session_status.state == cosmic::viewer::ViewerState::PairingNeedPin) {
-            ImGui::TextUnformatted("Enter this PIN on the host:");
+        if ((session_status.state == cosmic::viewer::ViewerState::PairingNeedPin ||
+             session_status.state == cosmic::viewer::ViewerState::PairingInProgress) &&
+            !session_status.pin.empty()) {
+            if (session_status.state == cosmic::viewer::ViewerState::PairingNeedPin) {
+                ImGui::TextUnformatted("Enter this PIN on the host:");
+            }
             ImGui::SetWindowFontScale(2.0f);
             ImGui::TextUnformatted(session_status.pin.c_str());
             ImGui::SetWindowFontScale(1.0f);

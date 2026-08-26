@@ -72,7 +72,7 @@ struct DisplayInfo {
 struct SessionStatus {
     ViewerState state = ViewerState::Idle;
     std::string message;
-    std::string pin;     // 4-digit PIN shown while PairingNeedPin
+    std::string pin;     // 4-digit PIN shown while PairingNeedPin / PairingInProgress
     int port_used = 0;   // host HTTP port this session talks to
     int stream_width = 0;   // negotiated video width (0 until streaming)
     int stream_height = 0;  // negotiated video height (0 until streaming)
