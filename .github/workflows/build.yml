@@ -1,6 +1,11 @@
 name: build
 
-# Build-only CI: catches compile breakage on both target platforms per commit.
+# Build-only CI. Three modes:
+# 1. Direct CI: push to main/master and pull requests catch compile breakage on
+#    both target platforms per commit.
+# 2. Reusable: release.yml (tag push) and nightly.yml (develop push + cron)
+#    call this workflow with inputs.ref, then publish the packaged artifacts.
+# 3. Manual: workflow_dispatch.
 # There are no unit tests yet - the streaming stack needs real hardware to
 # exercise, so verification is the manual matrix described in PLAN.md section 9.
 # Since M1 the host is built too, so the full host dependency set from
@@ -11,6 +16,12 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch or tag to build (defaults to the triggering ref)
+        type: string
+        required: false
 
 jobs:
   windows:
@@ -22,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
       - uses: msys2/setup-msys2@v2
@@ -42,6 +54,7 @@ jobs:
             mingw-w64-ucrt-x86_64-boost
             mingw-w64-ucrt-x86_64-MinHook
             mingw-w64-ucrt-x86_64-nlohmann-json
+            mingw-w64-ucrt-x86_64-ntldd
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -49,12 +62,24 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      - name: Package Windows bundle
+        shell: msys2 {0}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/make-zip.ps1
+
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmicdesk-windows-x64
+          path: dist/CosmicDesk-windows-x64.zip
+          if-no-files-found: error
+
   linux:
     name: Linux (Ubuntu)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
       - name: Install dependencies
@@ -81,3 +106,13 @@ jobs:
 
       - name: Build
         run: cmake --build build
+
+      - name: Package Linux tarball
+        run: bash packaging/linux/make-tarball.sh
+
+      - name: Upload Linux tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmicdesk-linux-x64
+          path: build/dist-linux/cosmicdesk-linux-x64.tar.gz
+          if-no-files-found: error

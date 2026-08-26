@@ -168,6 +168,14 @@ foreach ($dll in $DllPaths) {
     }
 }
 
+# Guard: a bundle without DLLs is not self-contained. The ntldd path can
+# silently find nothing (e.g. if MSYSTEM_PREFIX is wrong), so fail loudly
+# instead of publishing a broken artifact.
+if ($DllCount -eq 0) {
+    Write-Error "No DLLs were bundled; aborting. Check MSYSTEM_PREFIX and ntldd."
+    exit 1
+}
+
 # 3. Zip it up (overwrite).
 if (Test-Path -LiteralPath $ZipPath) {
     Remove-Item -LiteralPath $ZipPath -Force
