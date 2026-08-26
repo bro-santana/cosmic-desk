@@ -34,17 +34,23 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
   const bool in_zone = mouse_x >= 0.0f && mouse_x < viewport->Size.x &&
                        mouse_y >= 0.0f && mouse_y < kTopBarZone * scale();
 
-  // Auto-hide: the bar shows while the mouse is inside the top zone and hides
-  // 2 s after the last motion there (or immediately when the mouse leaves).
-  if (in_zone) {
-    if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
-      state->last_motion_time_ms = SDL_GetTicks64();
-      state->visible = true;
-    }
+  // Auto-hide. Two rules beyond "is the mouse near the top":
+  //  - The monitor dropdown pins the bar open. Its popup list is drawn BELOW
+  //    the bar, outside the top zone, so tracking the cursor alone would hide
+  //    the bar — and the popup with it — the moment the mouse moved onto an
+  //    entry, making a monitor impossible to pick.
+  //  - Being in the zone is enough; motion is not required. Otherwise resting
+  //    the pointer on the bar for 2 s hid it out from under the user.
+  // monitor_combo_open is only ever updated while the bar is drawn, so keeping
+  // the bar alive while it is set is also what lets it be cleared again.
+  const bool pinned_open = state->monitor_combo_open;
+  if (in_zone || pinned_open) {
+    state->last_motion_time_ms = SDL_GetTicks64();
+    state->visible = true;
   } else {
     state->visible = false;
   }
-  if (state->visible &&
+  if (state->visible && !pinned_open &&
       SDL_GetTicks64() - state->last_motion_time_ms > kAutoHideMs) {
     state->visible = false;
   }

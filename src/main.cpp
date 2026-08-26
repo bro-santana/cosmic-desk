@@ -497,22 +497,10 @@ int main(int argc, char** argv) {
                 cosmic::ui::draw_topbar(&topbar_state, viewer_fullscreen,
                                         monitors, session_status.active_display);
 
-            const ImVec2 display = ImGui::GetIO().DisplaySize;
-            ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f),
-                                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(0, 0), ImGuiCond_Always);
-            ImGui::Begin("Viewer", nullptr,
-                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                             ImGuiWindowFlags_NoBackground |
-                             ImGuiWindowFlags_NoSavedSettings);
-            ImGui::Text("Streaming %dx%d", session_status.stream_width,
-                        session_status.stream_height);
-            ImGui::Separator();
-            if (ImGui::Button("End session")) {
-                g_session->end_session();
-            }
-            ImGui::End();
-
+            // No centred overlay: it sat on top of the remote desktop for the
+            // whole session and swallowed mouse input wherever it covered
+            // (WantCaptureMouse gates forwarding). Ending the session lives on
+            // the top bar's Exit button and on Ctrl+Alt+Shift+Q.
             ImGui::Render();
             ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
             SDL_RenderPresent(renderer);
