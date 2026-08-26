@@ -510,7 +510,9 @@ namespace config {
     CERTIFICATE_FILE,
 
     platf::get_host_name(),  // sunshine_name,
-    "sunshine_state.json"s,  // file_state
+    // COSMIC MODIFICATION: paired-client state lives in the config dir (plan D6)
+    // as an explicit absolute path, not a CWD-relative default.
+    (platf::appdata() / "sunshine_state.json").string(),  // file_state
     {},  // external_ip
   };
 

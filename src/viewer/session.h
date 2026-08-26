@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "app/settings.h"
+
 #include <Limelight.h>
 
 #include <mutex>
@@ -44,7 +46,9 @@ struct SessionStatus {
 
 class Session {
 public:
-    Session() = default;
+    // settings is the app-wide Settings object (owned by main.cpp); the worker
+    // thread uses it to record successful connections as recent hosts.
+    explicit Session(Settings& settings);
     ~Session();
 
     Session(const Session&) = delete;
@@ -104,6 +108,7 @@ private:
     std::string stage_failed_message_;
     int termination_error_ = 0;
     std::string termination_message_;
+    Settings& settings_;
 };
 
 }  // namespace cosmic::viewer

@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <system_error>
@@ -85,7 +87,59 @@ Settings Settings::load() {
     return settings;
 }
 
+Settings::Settings(Settings&& other) noexcept
+    : port_base(other.port_base),
+      resolution_mode(other.resolution_mode),
+      custom_width(other.custom_width),
+      custom_height(other.custom_height),
+      fps(other.fps),
+      bitrate_kbps(other.bitrate_kbps),
+      autostart(other.autostart),
+      recent_hosts(std::move(other.recent_hosts)) {}
+
+void Settings::add_recent_host(const std::string& host) {
+    {
+        std::lock_guard lock(mutex_);
+
+        // Trim surrounding whitespace; ignore empty/whitespace-only input.
+        const auto begin = host.find_first_not_of(" \t\r\n");
+        if (begin == std::string::npos) {
+            return;
+        }
+        const auto end = host.find_last_not_of(" \t\r\n");
+        std::string trimmed = host.substr(begin, end - begin + 1);
+
+        // Dedupe case-insensitively, then move the entry to the front.
+        auto it = std::find_if(
+            recent_hosts.begin(), recent_hosts.end(),
+            [&](const std::string& existing) {
+                return std::equal(
+                    trimmed.begin(), trimmed.end(), existing.begin(),
+                    existing.end(),
+                    [](char a, char b) {
+                        return std::tolower(static_cast<unsigned char>(a)) ==
+                               std::tolower(static_cast<unsigned char>(b));
+                    });
+            });
+        if (it != recent_hosts.end()) {
+            recent_hosts.erase(it);
+        }
+        recent_hosts.insert(recent_hosts.begin(), trimmed);
+        if (recent_hosts.size() > 10) {
+            recent_hosts.resize(10);
+        }
+    }
+    save();
+}
+
+std::vector<std::string> Settings::recent_hosts_snapshot() const {
+    std::lock_guard lock(mutex_);
+    return recent_hosts;
+}
+
 bool Settings::save() const {
+    std::lock_guard lock(mutex_);
+
     std::error_code ec;
     std::filesystem::create_directories(config_dir(), ec);
     if (ec) {

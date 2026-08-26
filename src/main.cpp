@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -50,9 +51,10 @@ const char* tray_icon_name() {
 }
 
 // Viewer session (plan M2.2): one session object for the whole app lifetime;
-// its worker thread does all networking so the main loop never blocks.
-std::unique_ptr<cosmic::viewer::Session> g_session =
-    std::make_unique<cosmic::viewer::Session>();
+// its worker thread does all networking so the main loop never blocks. Created
+// in main() once the Settings object exists (the session needs it to record
+// recent hosts).
+std::unique_ptr<cosmic::viewer::Session> g_session;
 // ASCII-only host IP input: the default ImGui font has no other glyphs, and
 // the vendored imgui has no std::string InputText overload (imgui_stdlib.h is
 // not vendored), so this is a fixed buffer.
@@ -103,7 +105,10 @@ int main(int argc, char** argv) {
         settings.save();
     }
 
-    if (!cosmic::hostglue::start(settings)) {
+    g_session = std::make_unique<cosmic::viewer::Session>(settings);
+
+    const bool hosting_ok = cosmic::hostglue::start(settings);
+    if (!hosting_ok) {
         // Hosting is degraded but the app keeps running (plan M1.4): the UI and
         // viewer role still work, and the host log explains what failed.
         std::fprintf(stderr, "Hosting failed to start; continuing without it.\n");
@@ -289,7 +294,14 @@ int main(int argc, char** argv) {
         ImGui::TextUnformatted("Cosmic Desk is running.");
         ImGui::Separator();
         ImGui::Text("Config file: %s", cosmic::Settings::config_file().string().c_str());
-        ImGui::Text("Host port base: %d", settings.port_base);
+        // Hosting status line (plan M3.3): paired_client_count() is cached
+        // internally, so polling it every frame costs no disk I/O.
+        if (hosting_ok) {
+            ImGui::Text("Hosting on :%d - %d client(s) paired", settings.port_base,
+                        cosmic::hostglue::paired_client_count());
+        } else {
+            ImGui::TextUnformatted("Hosting unavailable (see log)");
+        }
         ImGui::Text("Resolution mode: %s", cosmic::to_string(settings.resolution_mode));
         ImGui::Text("Bitrate: %d kbps", settings.bitrate_kbps);
         ImGui::Text("Tray: %s", has_tray ? "active" : "unavailable");
@@ -299,6 +311,18 @@ int main(int argc, char** argv) {
         if (ImGui::Button("Connect")) {
             if (g_host_ip_input[0] != '\0') {
                 g_session->start_connect(g_host_ip_input, settings.port_base);
+            }
+        }
+        // Recent hosts (plan M3.3): clicking one fills the IP field; the
+        // Connect button starts the session as usual.
+        const std::vector<std::string> recent_hosts = settings.recent_hosts_snapshot();
+        if (!recent_hosts.empty()) {
+            ImGui::TextUnformatted("Recent:");
+            for (const auto& host : recent_hosts) {
+                if (ImGui::Selectable(host.c_str())) {
+                    std::snprintf(g_host_ip_input, sizeof(g_host_ip_input), "%s",
+                                  host.c_str());
+                }
             }
         }
         ImGui::Text("Session: %s", cosmic::viewer::to_string(session_status.state));
@@ -338,6 +362,11 @@ int main(int argc, char** argv) {
     // Stop the viewer session before tearing down SDL (plan M2.7): unblocks
     // the worker thread; the Session destructor joins it.
     g_session->end_session();
+    // Destroy the session (and join its worker) here, while `settings` is still
+    // alive: the worker calls settings_.add_recent_host(), and g_session is a
+    // namespace-scope static whose destructor would otherwise run at static
+    // destruction, after main()'s local `settings` is already gone.
+    g_session.reset();
 
     cosmic::ui::tray_stop();
     ImGui_ImplSDLRenderer2_Shutdown();

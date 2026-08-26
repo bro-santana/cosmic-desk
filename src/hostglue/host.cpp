@@ -27,6 +27,7 @@ extern "C" {
 #endif
 
 #include <clocale>
+#include <chrono>
 #include <codecvt>
 #include <cstdio>
 #include <filesystem>
@@ -36,6 +37,8 @@ extern "C" {
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace cosmic::hostglue {
 namespace {
@@ -135,6 +138,43 @@ bool write_host_conf(const Settings &settings) {
 }
 
 }  // namespace
+
+int paired_client_count() {
+  // Sunshine's state file format (host/sunshine/src/nvhttp.cpp save_state/
+  // load_state): root.named_devices is an array of paired client certs. Read it
+  // from disk rather than touching the vendored in-memory client_root, which
+  // the nvhttp thread owns. Cached for 2 s so the UI can poll per frame.
+  static std::chrono::steady_clock::time_point last_check;
+  static int cached_count = 0;
+
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_check < std::chrono::seconds(2)) {
+    return cached_count;
+  }
+  last_check = now;
+
+  std::ifstream file(platf::appdata() / "sunshine_state.json");
+  if (!file.is_open()) {
+    cached_count = 0;
+    return 0;
+  }
+
+  nlohmann::json json =
+      nlohmann::json::parse(file, nullptr, /*allow_exceptions=*/false);
+  if (json.is_discarded() || !json.is_object()) {
+    cached_count = 0;
+    return 0;
+  }
+
+  const auto &root = json["root"];
+  if (!root.is_object()) {
+    cached_count = 0;
+    return 0;
+  }
+  const auto &devices = root["named_devices"];
+  cached_count = devices.is_array() ? static_cast<int>(devices.size()) : 0;
+  return cached_count;
+}
 
 bool start(const Settings &settings) {
   // Locale setup mirrors upstream main.cpp (lines ~152-159): the C locale keeps

@@ -70,6 +70,8 @@ const char* to_string(ViewerState state) {
     return "Unknown";
 }
 
+Session::Session(Settings& settings) : settings_(settings) {}
+
 Session::~Session() {
     end_session();
     if (worker_thread_.joinable()) {
@@ -148,6 +150,10 @@ void Session::worker(std::string host_ip, int port) {
                    "", http_port);
         return;
     }
+    // Host reachable: record it as a recent host (plan M3.3). Runs on the
+    // worker thread; add_recent_host is mutex-protected against the main
+    // thread's UI reads of the same Settings object.
+    settings_.add_recent_host(host_ip);
     if (session_ended()) {
         set_status(ViewerState::Idle, "Session ended", "", http_port);
         return;

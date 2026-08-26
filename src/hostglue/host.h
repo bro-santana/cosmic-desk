@@ -18,4 +18,10 @@ bool start(const Settings &settings);
 // subsequent calls are no-ops.
 void stop();
 
+// Number of paired clients, read from <config dir>/sunshine_state.json
+// (Sunshine's format: root.named_devices array; see nvhttp.cpp save_state/
+// load_state). Returns 0 if the file is missing or unparseable. The result is
+// cached for 2 seconds, so the UI can poll this every frame without disk I/O.
+int paired_client_count();
+
 }  // namespace cosmic::hostglue
