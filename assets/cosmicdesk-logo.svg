@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 512 512"
+   version="1.1"
+   id="svg9"
+   sodipodi:docname="cosmicdesk-logo.svg"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview9"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.58902547"
+     inkscape:cx="30.55895"
+     inkscape:cy="180.80712"
+     inkscape:window-width="1920"
+     inkscape:window-height="1055"
+     inkscape:window-x="-7"
+     inkscape:window-y="-7"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg9" />
+  <defs
+     id="defs4">
+    <linearGradient
+       id="sunCD"
+       x1="379.00923"
+       y1="97.580736"
+       x2="545.88644"
+       y2="264.45794"
+       gradientTransform="matrix(0.81078364,0,0,1.6215673,-64.431113,-37.535035)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#FFCE54"
+         id="stop1" />
+      <stop
+         offset="1"
+         stop-color="#FF8F3C"
+         id="stop2" />
+    </linearGradient>
+    <linearGradient
+       id="moonCD"
+       x1="116.03215"
+       y1="109.31522"
+       x2="302.97702"
+       y2="296.26009"
+       gradientTransform="matrix(0.90828371,0,0,1.4474996,-64.431113,-37.535035)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#F2F6FD"
+         id="stop3" />
+      <stop
+         offset="1"
+         stop-color="#BFCFE8"
+         id="stop4" />
+    </linearGradient>
+  </defs>
+  <ellipse
+     style="display:inline;fill:#14172e;fill-opacity:1;stroke:#000000;stroke-width:1.25995"
+     id="path9"
+     cx="256"
+     cy="256"
+     rx="251.62669"
+     ry="251.62671" />
+  <!-- C : crescent moon -->
+  <path
+     d="m 210.75799,125.17051 a 135.30131,135.30131 0 1 0 0,261.65897 135.30131,135.30131 0 0 1 0,-261.65897 z"
+     fill="url(#moonCD)"
+     id="path4"
+     style="display:inline;fill:url(#moonCD);stroke-width:1.14662" />
+  <!-- D : half sun -->
+  <path
+     d="m 242.86338,120.69869 v 270.6026 a 135.30131,135.30131 0 0 0 0,-270.6026 z"
+     fill="url(#sunCD)"
+     id="path5"
+     style="fill:url(#sunCD);stroke-width:1.14662" />
+  <!-- rays on the sun side -->
+  <g
+     stroke="#ffb84d"
+     stroke-width="18"
+     stroke-linecap="round"
+     id="rays"
+     transform="matrix(1.1466212,0,0,1.1466212,-64.431112,-37.535034)">
+    <line
+       x1="343"
+       y1="126.1"
+       x2="363"
+       y2="91.5"
+       id="line5" />
+    <line
+       x1="397.89999"
+       y1="181"
+       x2="432.5"
+       y2="161"
+       id="line6" />
+    <line
+       x1="418"
+       y1="256"
+       x2="458"
+       y2="256"
+       id="line7" />
+    <line
+       x1="397.89999"
+       y1="331"
+       x2="432.5"
+       y2="351"
+       id="line8" />
+    <line
+       x1="343"
+       y1="385.89999"
+       x2="363"
+       y2="420.5"
+       id="line9" />
+  </g>
+</svg>

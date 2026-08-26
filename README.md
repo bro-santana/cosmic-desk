@@ -1,4 +1,6 @@
-# Cosmic Desk
+<p align="center">
+  <img src="assets/cosmicdesk-logo-text.png" alt="Cosmic Desk" width="568" />
+</p>
 
 A minimal AnyDesk/RustDesk-style remote desktop tool built on the **Moonlight protocol**.
 
