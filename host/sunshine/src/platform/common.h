@@ -15,7 +15,20 @@
 #include <boost/core/noncopyable.hpp>
 #ifndef _WIN32
   #include <boost/asio.hpp>
-  #include <boost/process/v1.hpp>
+  // COSMIC MODIFICATION: Boost < 1.86 has no boost/process/v1.hpp (the v1 inline
+  // namespace arrived in 1.86); Ubuntu 24.04 ships Boost 1.83, so use the flat
+  // boost/process API, which resolves to the same v1 namespace on newer Boost.
+  // (Boost >= 1.88 defaults boost/process.hpp to the v2 API, so keep v1.hpp with
+  // BOOST_PROCESS_VERSION=1 there to preserve the flat boost::process:: names.)
+  #include <boost/version.hpp>
+  #if BOOST_VERSION >= 108600
+    #ifndef BOOST_PROCESS_VERSION
+      #define BOOST_PROCESS_VERSION 1
+    #endif
+    #include <boost/process/v1.hpp>
+  #else
+    #include <boost/process.hpp>
+  #endif
 #endif
 
 // local includes
@@ -52,13 +65,18 @@ namespace boost {
     class path;
   }
 
-  namespace process::v1 {
-    class child;
-    class group;
-    template<typename Char>
-    class basic_environment;
-    typedef basic_environment<char> environment;
-  }  // namespace process::v1
+  // COSMIC MODIFICATION: v1 is declared inline (matching Boost >= 1.86 with
+  // BOOST_PROCESS_VERSION=1) so the flat boost::process:: names used below
+  // resolve to the same v1 namespace on both Boost 1.83 and >= 1.86.
+  namespace process {
+    inline namespace v1 {
+      class child;
+      class group;
+      template<typename Char>
+      class basic_environment;
+      typedef basic_environment<char> environment;
+    }  // namespace v1
+  }  // namespace process
 }  // namespace boost
 #endif
 namespace video {
@@ -608,7 +626,7 @@ namespace platf {
    */
   bool needs_encoder_reenumeration();
 
-  boost::process::v1::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const boost::process::v1::environment &env, FILE *file, std::error_code &ec, boost::process::v1::group *group);
+  boost::process::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const boost::process::environment &env, FILE *file, std::error_code &ec, boost::process::group *group);
 
   enum class thread_priority_e : int {
     low,  ///< Low priority

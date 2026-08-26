@@ -11,13 +11,26 @@
 
 // lib includes
 #include <boost/algorithm/string/join.hpp>
-#include <boost/process/v1.hpp>
+// COSMIC MODIFICATION: Boost < 1.86 has no boost/process/v1.hpp (the v1 inline
+// namespace arrived in 1.86); Ubuntu 24.04 ships Boost 1.83, so use the flat
+// boost/process API, which resolves to the same v1 namespace on newer Boost.
+// (Boost >= 1.88 defaults boost/process.hpp to the v2 API, so keep v1.hpp with
+// BOOST_PROCESS_VERSION=1 there to preserve the flat boost::process:: names.)
+#include <boost/version.hpp>
+#if BOOST_VERSION >= 108600
+  #ifndef BOOST_PROCESS_VERSION
+    #define BOOST_PROCESS_VERSION 1
+  #endif
+  #include <boost/process/v1.hpp>
+#else
+  #include <boost/process.hpp>
+#endif
 #include <MinHook.h>
 
 // local includes
 #include "utf_utils.h"
 
-// We have to include boost/process/v1.hpp before display.h due to WinSock.h,
+// We have to include the boost/process header before display.h due to WinSock.h,
 // but that prevents the definition of NTSTATUS so we must define it ourself.
 typedef long NTSTATUS;
 
@@ -44,7 +57,7 @@ namespace platf {
 }
 
 namespace platf::dxgi {
-  namespace bp = boost::process::v1;
+  namespace bp = boost::process;
 
   /**
    * DDAPI-specific initialization goes here.

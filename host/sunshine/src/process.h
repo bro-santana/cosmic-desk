@@ -13,7 +13,20 @@
 #include <unordered_map>
 
 // lib includes
-#include <boost/process/v1.hpp>
+// COSMIC MODIFICATION: Boost < 1.86 has no boost/process/v1.hpp (the v1 inline
+// namespace arrived in 1.86); Ubuntu 24.04 ships Boost 1.83, so use the flat
+// boost/process API, which resolves to the same v1 namespace on newer Boost.
+// (Boost >= 1.88 defaults boost/process.hpp to the v2 API, so keep v1.hpp with
+// BOOST_PROCESS_VERSION=1 there to preserve the flat boost::process:: names.)
+#include <boost/version.hpp>
+#if BOOST_VERSION >= 108600
+  #ifndef BOOST_PROCESS_VERSION
+    #define BOOST_PROCESS_VERSION 1
+  #endif
+  #include <boost/process/v1.hpp>
+#else
+  #include <boost/process.hpp>
+#endif
 
 // local includes
 #include "config.h"
@@ -74,7 +87,7 @@ namespace proc {
     KITTY_DEFAULT_CONSTR_MOVE_THROW(proc_t)
 
     proc_t(
-      boost::process::v1::environment &&env,
+      boost::process::environment &&env,
       std::vector<ctx_t> &&apps
     ):
         _app_id(0),
@@ -100,7 +113,7 @@ namespace proc {
   private:
     int _app_id;
 
-    boost::process::v1::environment _env;
+    boost::process::environment _env;
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
@@ -108,8 +121,8 @@ namespace proc {
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
 
-    boost::process::v1::child _process;
-    boost::process::v1::group _process_group;
+    boost::process::child _process;
+    boost::process::group _process_group;
 
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;
@@ -139,7 +152,7 @@ namespace proc {
    * @param group The group of all children in the process tree.
    * @param exit_timeout The timeout to wait for the process group to gracefully exit.
    */
-  void terminate_process_group(boost::process::v1::child &proc, boost::process::v1::group &group, std::chrono::seconds exit_timeout);
+  void terminate_process_group(boost::process::child &proc, boost::process::group &group, std::chrono::seconds exit_timeout);
 
   extern proc_t proc;
 }  // namespace proc

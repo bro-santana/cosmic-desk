@@ -38,7 +38,20 @@
 // lib includes
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/host_name.hpp>
-#include <boost/process/v1.hpp>
+// COSMIC MODIFICATION: Boost < 1.86 has no boost/process/v1.hpp (the v1 inline
+// namespace arrived in 1.86); Ubuntu 24.04 ships Boost 1.83, so use the flat
+// boost/process API, which resolves to the same v1 namespace on newer Boost.
+// (Boost >= 1.88 defaults boost/process.hpp to the v2 API, so keep v1.hpp with
+// BOOST_PROCESS_VERSION=1 there to preserve the flat boost::process:: names.)
+#include <boost/version.hpp>
+#if BOOST_VERSION >= 108600
+  #ifndef BOOST_PROCESS_VERSION
+    #define BOOST_PROCESS_VERSION 1
+  #endif
+  #include <boost/process/v1.hpp>
+#else
+  #include <boost/process.hpp>
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -77,7 +90,7 @@
 
 using namespace std::literals;
 namespace fs = std::filesystem;
-namespace bp = boost::process::v1;
+namespace bp = boost::process;
 
 window_system_e window_system;
 
@@ -330,7 +343,7 @@ namespace platf {
     auto working_dir = boost::filesystem::path(std::getenv("HOME"));
     std::string cmd = R"(xdg-open ")" + url + R"(")";
 
-    boost::process::v1::environment _env = boost::this_process::environment();
+    boost::process::environment _env = boost::this_process::environment();
     std::error_code ec;
     auto child = run_command(false, false, cmd, working_dir, _env, nullptr, ec, nullptr);
     if (ec) {

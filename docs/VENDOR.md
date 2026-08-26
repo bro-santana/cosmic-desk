@@ -95,6 +95,8 @@ comment):
   moonlight-common-c submodule (plan R3).
 - `entry_handler_shim.h` added: no-op `launch_ui()`, `lifetime::*` and stubbed
   `service_ctrl::*` replacements for the deleted upstream `entry_handler.h`.
+- `boost::process::v1` usage ported to the flat `boost::process` API so the host
+  compiles with Boost 1.83 (Ubuntu 24.04) as well as >= 1.86.
 
 ### `third-party/libdisplaydevice/`
 
