@@ -4,7 +4,7 @@
 
 #include "ui/viewer_topbar.h"
 
-#include "ui/scale.h"
+#include <cstdio>
 
 #include <SDL.h>
 #include <imgui.h>
@@ -12,9 +12,20 @@
 namespace cosmic::ui {
 namespace {
 
-constexpr float kTopBarHeight = 32.0f;
-constexpr float kTopBarZone = 48.0f;  // px from the top where the bar reappears
 constexpr std::uint64_t kAutoHideMs = 2000;
+
+// Height the row of widgets actually needs at the current font size, instead of
+// a fixed 32 px that a DPI-scaled font overflows (at 225% the buttons alone are
+// ~65 px). Must be called inside an ImGui frame.
+float bar_height() {
+  return ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0f;
+}
+
+// Band below the top edge that reveals the bar: the bar itself plus slack, so
+// the pointer does not have to land exactly on it.
+float reveal_zone() {
+  return bar_height() * 1.5f;
+}
 
 }  // namespace
 
@@ -32,7 +43,7 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
   const float mouse_x = io.MousePos.x - viewport->Pos.x;
   const float mouse_y = io.MousePos.y - viewport->Pos.y;
   const bool in_zone = mouse_x >= 0.0f && mouse_x < viewport->Size.x &&
-                       mouse_y >= 0.0f && mouse_y < kTopBarZone * scale();
+                       mouse_y >= 0.0f && mouse_y < reveal_zone();
 
   // Auto-hide. Two rules beyond "is the mouse near the top":
   //  - The monitor dropdown pins the bar open. Its popup list is drawn BELOW
@@ -63,7 +74,7 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
   // nav so the stream keeps keyboard input; main.cpp's WantCaptureMouse gate
   // already stops forwarding while the cursor is over the bar.
   ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kTopBarHeight * scale()),
+  ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, bar_height()),
                            ImGuiCond_Always);
   ImGui::Begin("ViewerTopBar", nullptr,
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
@@ -102,6 +113,9 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
     if (!state->monitor_combo_open) {
       state->monitor_combo_open = true;
       action.kind = TopBarAction::RefreshDisplays;
+      std::fprintf(stderr, "[topbar] combo opened: %zu monitors, active=%d\n",
+                   monitors.size(), active_index);
+      std::fflush(stderr);
     }
     for (int i = 0; i < static_cast<int>(monitors.size()); ++i) {
       const std::string label =

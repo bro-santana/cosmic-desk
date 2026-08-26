@@ -333,17 +333,28 @@ int main(int argc, char** argv) {
         // applied after the frame (fullscreen changes and session teardown
         // must not happen mid-ImGui-frame).
         cosmic::viewer::input::InputActions input_actions;
+        // While a popup is open (the top bar's monitor dropdown) ImGui owns the
+        // mouse for the whole window, not just the rectangle it covered last
+        // frame. WantCaptureMouse is one frame stale, so on the frame the
+        // cursor crosses from the bar onto the popup list it still reads false
+        // and the click is forwarded to the host instead. ImGui then sees a
+        // click over none of its own windows and runs its "clicking on void
+        // disables focus" path, which closes the popup -- that is what made the
+        // other monitor's entry vanish as soon as the list was hovered.
+        // Read before NewFrame(): the open-popup stack persists across frames.
+        const bool imgui_popup_open = ImGui::IsPopupOpen(
+            "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
         while (SDL_PollEvent(&event)) {
             // While streaming, forward input to the host before ImGui sees it
-            // (plan M2.6). Consumed events never reach ImGui. The overlay's
-            // "End session" button still works because ImGui claims mouse
-            // capture when the cursor is over it (WantCaptureMouse), which
-            // gates forwarding; the Ctrl+Alt+Shift+Q/Enter/Z escape combos
-            // stay active regardless of the capture state.
+            // (plan M2.6). Consumed events never reach ImGui; the top bar keeps
+            // working because ImGui claims mouse capture when the cursor is
+            // over it (WantCaptureMouse), which gates forwarding. The
+            // Ctrl+Alt+Shift+Q/Enter/Z escape combos stay active regardless.
             if (mode == cosmic::AppMode::Viewing &&
                 cosmic::viewer::input::handle_event(
                     event, window, ImGui::GetIO().WantCaptureKeyboard,
-                    ImGui::GetIO().WantCaptureMouse, &input_actions)) {
+                    ImGui::GetIO().WantCaptureMouse || imgui_popup_open,
+                    &input_actions)) {
                 continue;
             }
             ImGui_ImplSDL2_ProcessEvent(&event);

@@ -120,6 +120,7 @@ void Session::start_connect(const std::string& host_ip, int port) {
         stage_failed_ = false;
         stage_failed_message_.clear();
         connection_terminated_ = false;
+        active_display_pinned_ = false;
         termination_error_ = 0;
         termination_message_.clear();
         worker_running_ = true;
@@ -212,8 +213,28 @@ void Session::refresh_worker() {
     }
     std::lock_guard lock(mutex_);
     status_.displays = displays_to_vector(server_.displays);
-    status_.active_display = active_display_index(status_.displays);
+    // Only re-derive the active display before the user has switched. The
+    // host's `active` flag comes from config::video.output_name, which a
+    // mid-stream switch never updates (it goes through mail::switch_display
+    // and only moves video.cpp's display_p), so it still names the
+    // connect-time display. Overwriting the local selection with it snapped
+    // the [active] marker back after every refresh, and draw_topbar() ignores
+    // a click on the entry it believes is already active -- which is why
+    // switching worked exactly once and then silently stopped.
+    if (active_display_pinned_) {
+        if (status_.active_display >= static_cast<int>(status_.displays.size())) {
+            status_.active_display = 0;  // Display unplugged since the switch.
+        }
+    } else {
+        status_.active_display = active_display_index(status_.displays);
+    }
     refresh_running_ = false;
+    // The monitor dropdown is fed from this snapshot, so log what the host
+    // actually returned; a list that shrinks here is the difference between a
+    // UI bug and the host reporting fewer displays.
+    std::fprintf(stderr, "[session] monitor refresh: %zu display(s), active=%d\n",
+                 status_.displays.size(), status_.active_display);
+    std::fflush(stderr);
 }
 
 // COSMIC MODIFICATION (M5): records a monitor switch locally. The host has
@@ -224,6 +245,7 @@ void Session::set_active_display(int index) {
     std::lock_guard lock(mutex_);
     if (index >= 0 && index < static_cast<int>(status_.displays.size())) {
         status_.active_display = index;
+        active_display_pinned_ = true;
     }
 }
 

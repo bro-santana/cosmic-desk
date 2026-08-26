@@ -182,6 +182,11 @@ private:
     // static curl handle with the worker, so it must never run while the worker
     // is doing HTTP (gs_init/gs_pair/gs_applist/gs_quit_app). Guarded by mutex_.
     bool refresh_allowed_ = false;
+    // COSMIC MODIFICATION: set once the user switches monitors mid-stream.
+    // From then on status_.active_display is owned by set_active_display() and
+    // a /serverinfo refresh must not re-derive it -- the host's `active` flag
+    // is only a connect-time hint (hostglue/displays.cpp).
+    bool active_display_pinned_ = false;
     // COSMIC MODIFICATION (M5): the SERVER_DATA for the current connection,
     // owned by the session worker (populated by gs_init, re-fetched by the
     // refresh thread via gs_load_serverinfo). server_.serverInfo.address points
