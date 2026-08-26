@@ -2,7 +2,7 @@
   <img src="assets/cosmicdesk-logo-text.png" alt="Cosmic Desk" width="568" />
 </p>
 
-A minimal remote desktop tool built on the **Moonlight protocol**.
+A minimal remote desktop tool built on the **Moonlight protocol** and based on the **Sunshine** project.
 
 Cosmic Desk acts as both **client** and **server**, making it easier to use than other moonlight-based alternatives.
 
