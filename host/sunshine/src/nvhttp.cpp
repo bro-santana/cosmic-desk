@@ -1208,6 +1208,13 @@ namespace nvhttp {
     };
     https_server.resource["^/cancel$"]["GET"] = cancel;
 
+    // COSMIC MODIFICATION: Simple-Web-Server defaults thread_pool_size to 1,
+    // so the server services a single connection at a time. A client that
+    // holds an idle keep-alive connection -- which every Moonlight client does
+    // for the length of a stream -- then occupies the only slot and no other
+    // HTTPS request can even finish its TLS handshake. Give both servers room
+    // so one parked connection cannot starve pairing, applist or launch.
+    https_server.config.thread_pool_size = 4;
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);
     https_server.config.port = port_https;
@@ -1218,6 +1225,7 @@ namespace nvhttp {
       pair<SimpleWeb::HTTP>(add_cert, resp, req);
     };
 
+    http_server.config.thread_pool_size = 4;
     http_server.config.reuse_address = true;
     http_server.config.address = net::get_bind_address(address_family);
     http_server.config.port = port_http;

@@ -28,6 +28,10 @@ static CURL *curl;
 
 static bool debug;
 
+// COSMIC MODIFICATION: default total-request timeout, and the override that
+// http_set_timeout() installs for the parked pairing request.
+#define HTTP_DEFAULT_TIMEOUT_SEC 30L
+
 static size_t _write_curl(void *contents, size_t size, size_t nmemb, void *userp)
 {
   size_t realsize = size * nmemb;
@@ -45,6 +49,19 @@ static size_t _write_curl(void *contents, size_t size, size_t nmemb, void *userp
 }
 
 int http_init(const char* keyDirectory, int logLevel) {
+  // COSMIC MODIFICATION: release the handle from a previous gs_init() before
+  // making a new one. Upstream just overwrites the static, leaking the old
+  // handle AND the keep-alive TLS connection it still holds to the host.
+  // Sunshine's HTTPS server is single-threaded (Simple-Web-Server defaults
+  // thread_pool_size to 1 and nvhttp.cpp never raises it), so one abandoned
+  // connection occupies its only slot and every later HTTPS request hangs in
+  // the handshake. load_server_status() then falls back to plain HTTP, where
+  // Sunshine hardcodes PairStatus=0 -- which is why reconnecting in the same
+  // process asked to pair again, and why the re-pair could never complete.
+  if (curl != NULL) {
+    curl_easy_cleanup(curl);
+    curl = NULL;
+  }
   curl = curl_easy_init();
   debug = logLevel >= 2;
   if (!curl)
@@ -71,11 +88,19 @@ int http_init(const char* keyDirectory, int logLevel) {
   // (minutes-long) TCP connect timeout.
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
   // COSMIC MODIFICATION: total request timeout so the worker regains control
-  // on unresponsive hosts or a pairing that parks forever waiting for PIN
-  // approval; the session worker then sees the failure and returns.
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  // on unresponsive hosts. Pairing raises this via http_set_timeout(): its
+  // first request deliberately parks on the host until a human approves the
+  // PIN, so it must not be held to the same budget.
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, HTTP_DEFAULT_TIMEOUT_SEC);
 
   return GS_OK;
+}
+
+void http_set_timeout(long seconds) {
+  if (curl == NULL)
+    return;
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT,
+                   seconds > 0 ? seconds : HTTP_DEFAULT_TIMEOUT_SEC);
 }
 
 int http_request(char* url, PHTTP_DATA data) {

@@ -292,6 +292,21 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
         return;
     }
 
+    if (!server.paired && !server.pairedOverHttps) {
+        // PairStatus came from the plain-HTTP fallback, which Sunshine
+        // hardcodes to 0 (nvhttp.cpp serverinfo()), so it tells us nothing:
+        // the host's HTTPS listener simply did not answer. Pairing anyway
+        // would prompt for a PIN and then fail, because every remaining step
+        // (pairchallenge, applist, launch) is HTTPS too. Report the real
+        // problem instead of looping the user through a pointless re-pair.
+        set_status(ViewerState::Failed,
+                   "Host is not answering on HTTPS (port " +
+                       std::to_string(http_port - 5) +
+                       "); cannot check pairing. Restart Cosmic Desk on the host.",
+                   "", http_port);
+        return;
+    }
+
     if (!server.paired) {
         const std::string pin = generate_pin();
         set_status(ViewerState::PairingNeedPin, "Enter this PIN on the host",

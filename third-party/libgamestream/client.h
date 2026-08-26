@@ -31,6 +31,11 @@
 typedef struct _SERVER_DATA {
   char* gpuType;
   bool paired;
+  // COSMIC MODIFICATION: true when the PairStatus in `paired` came from an
+  // HTTPS /serverinfo. Sunshine hardcodes PairStatus=0 on plain HTTP, so a
+  // paired=false that arrived over the HTTP fallback means "unknown", not
+  // "not paired" -- see load_server_status().
+  bool pairedOverHttps;
   bool unsupported;
   bool isNvidiaSoftware;
   int currentGame;

@@ -32,4 +32,9 @@ typedef struct _HTTP_DATA {
 int http_init(const char* keyDirectory, int logLevel);
 PHTTP_DATA http_create_data();
 int http_request(char* url, PHTTP_DATA data);
+// COSMIC MODIFICATION: overrides CURLOPT_TIMEOUT for subsequent requests.
+// Pairing phase 1 parks on the host until a human types the PIN there, which
+// needs far longer than the default; everything else keeps the short timeout.
+// Pass 0 to restore the default.
+void http_set_timeout(long seconds);
 void http_free_data(PHTTP_DATA data);

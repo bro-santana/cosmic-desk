@@ -190,6 +190,11 @@ static void free_cosmic_displays(PCOSMIC_DISPLAY displays) {
   }
 }
 
+// COSMIC MODIFICATION: how long the parked pairing request may wait for the
+// host user to approve the PIN. Sunshine itself never expires the request, so
+// this is purely the client's patience budget.
+#define GS_PAIR_TIMEOUT_SEC 300L
+
 static int load_serverinfo(PSERVER_DATA server, bool https) {
   uuid_t uuid;
   char uuid_str[UUID_STRLEN];
@@ -267,6 +272,11 @@ static int load_serverinfo(PSERVER_DATA server, bool https) {
     goto cleanup;
 
   server->paired = pairedText != NULL && strcmp(pairedText, "1") == 0;
+  // COSMIC MODIFICATION: remember whether this PairStatus is trustworthy.
+  // Sunshine only ever reports PairStatus=1 on the HTTPS server (nvhttp.cpp
+  // serverinfo(): pair_status stays 0 for the plain-HTTP instantiation), so a
+  // false from the HTTP fallback carries no information.
+  server->pairedOverHttps = https;
   server->currentGame = currentGameText == NULL ? 0 : atoi(currentGameText);
   server->serverInfo.serverCodecModeSupport = serverCodecModeSupportText == NULL ? SCM_H264 : atoi(serverCodecModeSupportText);
   server->serverMajorVersion = atoi(server->serverInfo.serverInfoAppVersion);
@@ -503,7 +513,16 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   data = http_create_data();
   if (data == NULL)
     return GS_OUT_OF_MEMORY;
-  else if ((ret = http_request(url, data)) != GS_OK)
+  // COSMIC MODIFICATION: this request deliberately parks on the host until a
+  // human reads the PIN off the client and types it into the host's dialog
+  // (nvhttp.cpp getservercert stores the response and returns). The default
+  // 30 s budget is far too short for someone walking to another machine, and
+  // expiring it aborts the client while the host completes the handshake
+  // anyway -- which is what made pairing look like it never worked.
+  http_set_timeout(GS_PAIR_TIMEOUT_SEC);
+  ret = http_request(url, data);
+  http_set_timeout(0);
+  if (ret != GS_OK)
     goto cleanup;
 
   if ((ret = xml_status(data->memory, data->size) != GS_OK))
