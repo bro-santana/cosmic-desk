@@ -237,10 +237,12 @@ target_link_libraries(cosmic_host PUBLIC
     Boost::system
     ${CURL_LIBRARIES}
     ${OPUS_LIBRARIES}
-    ${FFMPEG_STATIC_LIBRARIES}
 )
 
 if(WIN32)
+    # MSYS2 ships static archives for the whole FFmpeg codec closure, so the
+    # --static pkg-config closure resolves here (unlike Ubuntu, see below).
+    target_link_libraries(cosmic_host PUBLIC ${FFMPEG_STATIC_LIBRARIES})
     # Mirrors upstream windows.cmake PLATFORM_LIBRARIES (minus ViGEm/tray/RC).
     # COSMIC MODIFICATION: shell32 added — platform/windows/misc.cpp appdata()
     # uses SHGetKnownFolderPath() for %APPDATA%\CosmicDesk (plan D6).
@@ -318,6 +320,52 @@ elseif(UNIX AND NOT APPLE)
     add_subdirectory("${COSMIC_THIRD_PARTY_DIR}/glad/cmake" glad2-cmake)
     unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+    # Generate the glad EGL + GL loaders (mirrors upstream dependencies/glad.cmake).
+    # One library per API: glad 2.0.0's glad_add_library() does not deduplicate
+    # shared output headers (KHR/khrplatform.h is emitted by both APIs), so a
+    # single call would make ninja fail with duplicate output rules.
+    glad_add_library(glad_egl
+        STATIC
+        REPRODUCIBLE
+        LOCATION "${CMAKE_BINARY_DIR}/gladsources/glad_egl"
+        LOADER
+        MX
+        API
+            "egl=1.5"
+        EXTENSIONS
+            EGL_EXT_image_dma_buf_import
+            EGL_EXT_image_dma_buf_import_modifiers
+            EGL_EXT_platform_base
+            EGL_EXT_platform_wayland
+            EGL_EXT_platform_x11
+            EGL_IMG_context_priority
+            EGL_KHR_create_context
+            EGL_KHR_image_base
+            EGL_KHR_surfaceless_context
+            EGL_MESA_platform_gbm
+    )
+
+    glad_add_library(glad_gl
+        STATIC
+        REPRODUCIBLE
+        LOCATION "${CMAKE_BINARY_DIR}/gladsources/glad_gl"
+        LOADER
+        MX
+        API
+            "gl:compatibility=4.6"
+    )
+
+    # Combine both into a single INTERFACE target so cosmic_host can link "glad".
+    add_library(glad INTERFACE)
+    target_link_libraries(glad INTERFACE glad_egl glad_gl)
+
+    # Ubuntu ships FFmpeg codecs as shared libs only; the --static closure
+    # references dozens of nonexistent static archives (-lmp3lame -lopenjp2
+    # -lrav1e -lspeex -lSvtAv1Enc -ltheoraenc -lx264 -lx265 -lvpx ...). Link the
+    # shared closure instead: the .so files carry their transitive deps via
+    # DT_NEEDED, and Ubuntu's libavcodec60 package pulls all the runtime codec
+    # libs.
+    target_link_libraries(cosmic_host PUBLIC ${FFMPEG_LIBRARIES})
     target_link_libraries(cosmic_host PUBLIC
         ${X11_LIBRARIES}
         ${LIBVA_LIBRARIES}
