@@ -22,6 +22,12 @@
 #include <string>
 #include <thread>
 
+// libgamestream's headers are plain C (no extern "C" guards); the Session owns
+// a SERVER_DATA (server_) that the monitor-refresh thread re-fetches against.
+extern "C" {
+#include <client.h>
+}
+
 namespace cosmic::viewer {
 
 enum class ViewerState {
@@ -39,10 +45,28 @@ const char* to_string(ViewerState state);
 // connection starts (plan M4.4). The worker thread gets a copy by value so it
 // never reads the live Settings scalars while the user edits them mid-connect.
 struct StreamPrefs {
-    int width = 1920;
-    int height = 1080;
+    // COSMIC MODIFICATION (M5): carries the resolution mode instead of a
+    // pre-resolved WxH. "Host native" is resolved from the just-fetched
+    // CosmicDisplays snapshot at the point STREAM_CONFIGURATION is filled in
+    // (the worker has the displays by then); the fixed modes keep their own
+    // WxH. custom_w/custom_h hold the Custom mode's dimensions.
+    ResolutionMode mode = ResolutionMode::HostNative;
+    int custom_w = 1920;
+    int custom_h = 1080;
     int fps = 60;
     int bitrate_kbps = 20000;
+};
+
+// COSMIC MODIFICATION (M5): one host display from the <CosmicDisplays> block
+// (docs/PROTOCOL.md). Mirrors COSMIC_DISPLAY in libgamestream/xml.h; stored in
+// the status snapshot for the top-bar monitor dropdown.
+struct DisplayInfo {
+    std::string name;
+    int width = 0;
+    int height = 0;
+    int fps = 0;
+    bool primary = false;
+    bool active = false;
 };
 
 struct SessionStatus {
@@ -52,6 +76,10 @@ struct SessionStatus {
     int port_used = 0;   // host HTTP port this session talks to
     int stream_width = 0;   // negotiated video width (0 until streaming)
     int stream_height = 0;  // negotiated video height (0 until streaming)
+    // COSMIC MODIFICATION (M5): host display list + the currently captured
+    // (active) display index, refreshed when the monitor dropdown opens.
+    std::vector<DisplayInfo> displays;
+    int active_display = 0;
 };
 
 class Session {
@@ -79,8 +107,21 @@ public:
 
     bool is_streaming() const;
 
+    // COSMIC MODIFICATION (M5): re-fetches /serverinfo on a short-lived thread
+    // and updates the displays snapshot + active_display under the status
+    // mutex. No-op if a refresh is already running. Safe to call from the main
+    // thread while streaming; the refresh thread is joined in the worker's
+    // teardown so it never outlives the session worker that owns server_.
+    void refresh_displays();
+
+    // COSMIC MODIFICATION (M5): records a monitor switch locally (the host has
+    // already switched via the synthesized hotkey); updates active_display in
+    // the status snapshot under the mutex. Main thread only.
+    void set_active_display(int index);
+
 private:
     void worker(std::string host_ip, int port, StreamPrefs prefs);
+    void refresh_worker();
     bool session_ended() const;
     void set_status(ViewerState state, const std::string& message,
                     const std::string& pin = "", int port_used = 0);
@@ -120,6 +161,22 @@ private:
     int termination_error_ = 0;
     std::string termination_message_;
     Settings& settings_;
+    // COSMIC MODIFICATION (M5): the refresh thread spawned by refresh_displays().
+    // Guarded by mutex_ (refresh_running_); joined in the worker's tail teardown
+    // so it never outlives the worker that owns server_.
+    std::thread refresh_thread_;
+    bool refresh_running_ = false;
+    // COSMIC MODIFICATION (M5): true only while the worker is blocked in
+    // LiStartConnection() (streaming). The refresh thread shares libgamestream's
+    // static curl handle with the worker, so it must never run while the worker
+    // is doing HTTP (gs_init/gs_pair/gs_applist/gs_quit_app). Guarded by mutex_.
+    bool refresh_allowed_ = false;
+    // COSMIC MODIFICATION (M5): the SERVER_DATA for the current connection,
+    // owned by the session worker (populated by gs_init, re-fetched by the
+    // refresh thread via gs_load_serverinfo). server_.serverInfo.address points
+    // into the worker's local address buffer, so the refresh thread must be
+    // joined before the worker returns (done in the worker's tail teardown).
+    SERVER_DATA server_ = {};
 };
 
 }  // namespace cosmic::viewer

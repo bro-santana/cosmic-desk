@@ -37,12 +37,24 @@ typedef struct _SERVER_DATA {
   int serverMajorVersion;
   char* gsVersion;
   PDISPLAY_MODE modes;
+  // COSMIC MODIFICATION: parsed <CosmicDisplays> list (docs/PROTOCOL.md),
+  // populated by gs_init/gs_load_serverinfo. NULL when the host is stock
+  // Sunshine (no CosmicDisplays block). Owned by the caller; free each node's
+  // name and the nodes themselves.
+  PCOSMIC_DISPLAY displays;
   SERVER_INFORMATION serverInfo;
   unsigned short httpPort;
   unsigned short httpsPort;
 } SERVER_DATA, *PSERVER_DATA;
 
 int gs_init(PSERVER_DATA server, char* address, unsigned short httpPort, const char *keyDirectory, int logLevel, bool unsupported);
+// COSMIC MODIFICATION: refresh-only /serverinfo fetch (plan M5.3). Re-reads the
+// host's serverinfo — including the CosmicDisplays block — into an already
+// initialized SERVER_DATA (one that gs_init() populated). Tries HTTPS first,
+// then HTTP, mirroring load_server_status()'s retry loop. Returns GS_OK on
+// success. The caller must have called gs_init() first so the client cert,
+// unique id and http/https ports are set up.
+int gs_load_serverinfo(PSERVER_DATA server);
 int gs_start_app(PSERVER_DATA server, PSTREAM_CONFIGURATION config, int appId, bool sops, bool localaudio, int gamepad_mask);
 int gs_applist(PSERVER_DATA server, PAPP_LIST *app_list);
 int gs_unpair(PSERVER_DATA server);

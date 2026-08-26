@@ -124,6 +124,66 @@ static void XMLCALL _xml_start_status_element(void *userData, const char *name, 
 
 static void XMLCALL _xml_end_status_element(void *userData, const char *name) { }
 
+// COSMIC MODIFICATION: <CosmicDisplays> parsing (docs/PROTOCOL.md). On each
+// <Display> start we read the attributes and append a node to the list in
+// document order. The expat attribute array is a NULL-terminated list of
+// name/value pairs.
+static void XMLCALL _xml_start_cosmic_display_element(void *userData, const char *name, const char **atts) {
+  struct xml_query *search = (struct xml_query*) userData;
+  if (strcmp("Display", name) != 0)
+    return;
+
+  PCOSMIC_DISPLAY display = calloc(1, sizeof(COSMIC_DISPLAY));
+  if (display == NULL)
+    return;
+
+  for (int i = 0; atts[i]; i += 2) {
+    const char *attr = atts[i];
+    const char *value = atts[i + 1];
+    if (strcmp("index", attr) == 0)
+      display->index = atoi(value);
+    else if (strcmp("name", attr) == 0)
+      display->name = strdup(value);
+    else if (strcmp("width", attr) == 0)
+      display->width = atoi(value);
+    else if (strcmp("height", attr) == 0)
+      display->height = atoi(value);
+    else if (strcmp("fps", attr) == 0)
+      display->fps = atoi(value);
+    else if (strcmp("primary", attr) == 0)
+      display->primary = atoi(value) != 0;
+    else if (strcmp("active", attr) == 0)
+      display->active = atoi(value) != 0;
+  }
+
+  // Append in document order: walk to the tail of the list built so far.
+  PCOSMIC_DISPLAY *tail = (PCOSMIC_DISPLAY*) &search->data;
+  while (*tail != NULL)
+    tail = &(*tail)->next;
+  *tail = display;
+}
+
+static void XMLCALL _xml_end_cosmic_display_element(void *userData, const char *name) { }
+
+int xml_cosmic_displays(char* data, size_t len, PCOSMIC_DISPLAY *displays) {
+  struct xml_query query = {0};
+  query.data = NULL;
+  XML_Parser parser = XML_ParserCreate("UTF-8");
+  XML_SetUserData(parser, &query);
+  XML_SetElementHandler(parser, _xml_start_cosmic_display_element, _xml_end_cosmic_display_element);
+  if (! XML_Parse(parser, data, len, 1)) {
+    int code = XML_GetErrorCode(parser);
+    gs_error = XML_ErrorString(code);
+    XML_ParserFree(parser);
+    return GS_INVALID;
+  }
+
+  XML_ParserFree(parser);
+  *displays = (PCOSMIC_DISPLAY) query.data;
+
+  return GS_OK;
+}
+
 static void XMLCALL _xml_write_data(void *userData, const XML_Char *s, int len) {
   struct xml_query *search = (struct xml_query*) userData;
   if (search->start > 0) {

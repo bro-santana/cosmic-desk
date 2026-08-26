@@ -178,6 +178,18 @@ static int load_cert(const char* keyDirectory) {
   return GS_OK;
 }
 
+// COSMIC MODIFICATION: frees a CosmicDisplays list (each node's name and the
+// nodes themselves). Used when re-fetching serverinfo so the old list does not
+// leak.
+static void free_cosmic_displays(PCOSMIC_DISPLAY displays) {
+  while (displays != NULL) {
+    PCOSMIC_DISPLAY next = displays->next;
+    free(displays->name);
+    free(displays);
+    displays = next;
+  }
+}
+
 static int load_serverinfo(PSERVER_DATA server, bool https) {
   uuid_t uuid;
   char uuid_str[UUID_STRLEN];
@@ -239,6 +251,15 @@ static int load_serverinfo(PSERVER_DATA server, bool https) {
     goto cleanup;
 
   if (xml_modelist(data->memory, data->size, &server->modes) != GS_OK)
+    goto cleanup;
+
+  // COSMIC MODIFICATION: parse the <CosmicDisplays> block (docs/PROTOCOL.md).
+  // On a re-fetch (gs_load_serverinfo) the previous list is freed first so it
+  // does not leak. A stock Sunshine host has no such block, so xml_cosmic_displays
+  // yields NULL and the caller falls back to 1920x1080.
+  free_cosmic_displays(server->displays);
+  server->displays = NULL;
+  if (xml_cosmic_displays(data->memory, data->size, &server->displays) != GS_OK)
     goto cleanup;
 
   // These fields are present on all version of GFE that this client supports
@@ -312,6 +333,20 @@ static int load_server_status(PSERVER_DATA server) {
     }
   }
 
+  return ret;
+}
+
+// COSMIC MODIFICATION: refresh-only /serverinfo fetch (plan M5.3). Re-reads the
+// host's serverinfo — including the CosmicDisplays block — into an already
+// initialized SERVER_DATA. Mirrors load_server_status()'s retry loop: try HTTPS
+// first, then HTTP (a paired host serves serverinfo over HTTPS; an unpaired one
+// may only answer over HTTP). The caller must have called gs_init() first so the
+// client cert, unique id and ports are set up. Returns GS_OK on success.
+int gs_load_serverinfo(PSERVER_DATA server) {
+  int ret = GS_INVALID;
+  for (int i = 0; i < 2 && ret != GS_OK; i++) {
+    ret = load_serverinfo(server, i == 0);
+  }
   return ret;
 }
 

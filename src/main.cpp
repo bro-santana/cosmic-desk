@@ -104,6 +104,24 @@ std::unique_ptr<cosmic::viewer::Session> g_session;
 // not vendored), so this is a fixed buffer.
 char g_host_ip_input[64] = {};
 
+// COSMIC MODIFICATION (M5): converts the session's display snapshot into the
+// top bar's monitor list. The UI layer (cosmic::ui) does not depend on the
+// viewer session, so main.cpp bridges the two structs.
+std::vector<cosmic::ui::MonitorInfo> to_monitor_info(
+    const std::vector<cosmic::viewer::DisplayInfo>& displays) {
+    std::vector<cosmic::ui::MonitorInfo> out;
+    out.reserve(displays.size());
+    for (const auto& d : displays) {
+        cosmic::ui::MonitorInfo m;
+        m.name = d.name;
+        m.width = d.width;
+        m.height = d.height;
+        m.active = d.active;
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -361,10 +379,13 @@ int main(int argc, char** argv) {
             // Top bar (plan M4.1): drawn after the video so it sits above it,
             // before the centered placeholder overlay. The returned action is
             // applied after the ImGui frame below — SDL_SetWindowFullscreen
-            // and end_session() must not run mid-frame. M5: pass the real
-            // host monitor count from CosmicDisplays.
+            // and end_session() must not run mid-frame. M5: the monitor
+            // dropdown is fed from the session's display snapshot.
+            const std::vector<cosmic::ui::MonitorInfo> monitors =
+                to_monitor_info(session_status.displays);
             const cosmic::ui::TopBarAction topbar_action =
-                cosmic::ui::draw_topbar(&topbar_state, viewer_fullscreen, 1);
+                cosmic::ui::draw_topbar(&topbar_state, viewer_fullscreen,
+                                        monitors, session_status.active_display);
 
             const ImVec2 display = ImGui::GetIO().DisplaySize;
             ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f),
@@ -411,6 +432,19 @@ int main(int argc, char** argv) {
                     cosmic::viewer::input::flush_input_state();
                     apply_input_grab(window, false);
                 }
+            }
+            // COSMIC MODIFICATION (M5): monitor dropdown actions. Opening the
+            // combo re-fetches /serverinfo (hotplug); selecting a different
+            // monitor synthesizes Ctrl+Alt+Shift+F(1+i) on the host and marks
+            // it active locally so the dropdown's [active] marker stays in
+            // sync without another round-trip.
+            if (topbar_action.kind == cosmic::ui::TopBarAction::RefreshDisplays) {
+                g_session->refresh_displays();
+            }
+            if (topbar_action.kind == cosmic::ui::TopBarAction::SwitchMonitor) {
+                cosmic::viewer::input::send_monitor_switch(
+                    topbar_action.monitor_index);
+                g_session->set_active_display(topbar_action.monitor_index);
             }
             continue;
         }

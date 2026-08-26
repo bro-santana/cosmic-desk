@@ -19,6 +19,7 @@
 #pragma once
 
 #include <stdio.h>
+#include <stdbool.h>
 
 typedef struct _APP_LIST {
   char* name;
@@ -33,7 +34,27 @@ typedef struct _DISPLAY_MODE {
   struct _DISPLAY_MODE *next;
 } DISPLAY_MODE, *PDISPLAY_MODE;
 
+// COSMIC MODIFICATION: Cosmic Desk extends /serverinfo with a <CosmicDisplays>
+// block (docs/PROTOCOL.md). This struct mirrors one <Display> element; the
+// list is linked in document order. index matches the F(1+i) hotkey offset the
+// host's apply_shortcut() consumes (ordering contract, see PROTOCOL.md).
+typedef struct _COSMIC_DISPLAY {
+  int index;
+  char* name;
+  int width;
+  int height;
+  int fps;
+  bool primary;
+  bool active;
+  struct _COSMIC_DISPLAY *next;
+} COSMIC_DISPLAY, *PCOSMIC_DISPLAY;
+
 int xml_search(char* data, size_t len, char* node, char** result);
 int xml_applist(char* data, size_t len, PAPP_LIST *app_list);
 int xml_modelist(char* data, size_t len, PDISPLAY_MODE *mode_list);
 int xml_status(char* data, size_t len);
+// COSMIC MODIFICATION: parses the <CosmicDisplays> block into *displays (a
+// freshly allocated linked list in document order, or NULL if the block is
+// absent). Returns GS_OK on success. The caller owns the list and must free
+// each node's name and the nodes themselves.
+int xml_cosmic_displays(char* data, size_t len, PCOSMIC_DISPLAY *displays);

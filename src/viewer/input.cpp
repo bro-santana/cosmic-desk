@@ -216,5 +216,34 @@ void flush_input_state() {
     g_mouse_buttons_down.clear();
 }
 
+// COSMIC MODIFICATION (M5): monitor-switch hotkey synthesis (docs/PROTOCOL.md).
+// The host's input.cpp::apply_shortcut() fires switch_display on the F-key
+// keydown while Ctrl+Alt+Shift are held, so we send the three modifiers down
+// (VKEY_LSHIFT 0xA0, VKEY_LCONTROL 0xA2, VKEY_LMENU 0xA4 — the VKs
+// update_shortcutFlags() tracks), then the F key, then release everything in
+// reverse order. The trailing redundant modifier ups are the D3b/M5
+// no-stuck-state mitigation: Sunshine's "Already released" path tolerates them.
+void send_monitor_switch(int index) {
+    if (index < 0 || index > 12) {
+        return;  // F1..F13 only (docs/PROTOCOL.md).
+    }
+    const short modifiers[3] = {0xA2, 0xA4, 0xA0};  // LCONTROL, LMENU, LSHIFT
+    const short f_key = static_cast<short>(0x70 + index);  // VK_F1 = 0x70
+    for (short vk : modifiers) {
+        LiSendKeyboardEvent(static_cast<short>(0x8000 | vk), KEY_ACTION_DOWN, 0);
+    }
+    LiSendKeyboardEvent(static_cast<short>(0x8000 | f_key), KEY_ACTION_DOWN, 0);
+    LiSendKeyboardEvent(static_cast<short>(0x8000 | f_key), KEY_ACTION_UP, 0);
+    for (int i = 2; i >= 0; --i) {
+        LiSendKeyboardEvent(static_cast<short>(0x8000 | modifiers[i]),
+                            KEY_ACTION_UP, 0);
+    }
+    // Explicit key-ups for all three modifiers once more, so no stuck
+    // Ctrl/Alt/Shift state can leak into the host.
+    for (short vk : modifiers) {
+        LiSendKeyboardEvent(static_cast<short>(0x8000 | vk), KEY_ACTION_UP, 0);
+    }
+}
+
 }  // namespace input
 }  // namespace cosmic::viewer

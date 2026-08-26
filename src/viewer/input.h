@@ -42,5 +42,12 @@ bool handle_event(const SDL_Event& event, SDL_Window* window,
 // only, like handle_event().
 void flush_input_state();
 
+// COSMIC MODIFICATION (M5): synthesizes the host's monitor-switch hotkey
+// Ctrl+Alt+Shift+F(1+i) over the encrypted input channel (docs/PROTOCOL.md).
+// index is the CosmicDisplays index (0..12, F1..F13); the host's
+// apply_shortcut() maps it to the same platf::display_names() ordering. Main
+// thread only, called after the frame like other actions.
+void send_monitor_switch(int index);
+
 }  // namespace input
 }  // namespace cosmic::viewer

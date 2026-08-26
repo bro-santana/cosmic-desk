@@ -39,6 +39,10 @@
 // header lives in the app's src/ tree; only the declaration is needed here —
 // pin_bridge.cpp is compiled into the cosmicdesk target, not cosmic_host.
 #include "hostglue/pin_bridge.h"
+// COSMIC MODIFICATION: Cosmic Desk display enumeration for the /serverinfo
+// extension (M5.1). Same pattern as pin_bridge.h: declared in the app's src/
+// tree, implemented in displays.cpp in the cosmicdesk target.
+#include "hostglue/displays.h"
 
 using namespace std::literals;
 
@@ -714,6 +718,27 @@ namespace nvhttp {
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
+
+    // COSMIC MODIFICATION: Cosmic Desk display extension (PLAN D3a, docs/PROTOCOL.md).
+    // Stock Moonlight clients ignore unknown nodes. Ordering contract (D3c): these
+    // entries are in platf::display_names() order, the same order consumed by
+    // apply_shortcut()'s Ctrl+Alt+Shift+F(1+i) handler in input.cpp.
+    tree.put("root.CosmicVersion", 1);
+    pt::ptree displays_tree;
+    int index = 0;
+    for (const auto &display : cosmic::displays::list_displays()) {
+      pt::ptree node;
+      node.put("<xmlattr>.index", index);
+      node.put("<xmlattr>.name", display.name);
+      node.put("<xmlattr>.width", display.width);
+      node.put("<xmlattr>.height", display.height);
+      node.put("<xmlattr>.fps", display.fps);
+      node.put("<xmlattr>.primary", display.primary ? 1 : 0);
+      node.put("<xmlattr>.active", display.active ? 1 : 0);
+      displays_tree.add_child("Display", node);
+      ++index;
+    }
+    tree.add_child("root.CosmicDisplays", displays_tree);
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.

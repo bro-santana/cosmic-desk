@@ -16,7 +16,9 @@ constexpr std::uint64_t kAutoHideMs = 2000;
 
 }  // namespace
 
-TopBarAction draw_topbar(TopBarState* state, bool fullscreen, int monitor_count) {
+TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
+                         const std::vector<MonitorInfo>& monitors,
+                         int active_index) {
   TopBarAction action;
   action.kind = TopBarAction::None;
   action.monitor_index = 0;
@@ -68,12 +70,44 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen, int monitor_count)
     action.kind = TopBarAction::ToggleFullscreen;
   }
   ImGui::SameLine();
-  // M5: populate from CosmicDisplays + send Ctrl+Alt+Shift+F1+i.
-  int monitor_index = 0;
-  ImGui::BeginDisabled(true);
-  ImGui::Combo("Monitor", &monitor_index, "1 (primary)\0\0");
-  ImGui::EndDisabled();
-  action.monitor_index = monitor_index;
+  // Monitor dropdown (plan M5.3): opening it re-fetches /serverinfo so hotplug
+  // changes are picked up (docs/PROTOCOL.md); selecting a different entry
+  // synthesizes Ctrl+Alt+Shift+F(1+i) on the host. Labels are "i+1: name (WxH)"
+  // with a trailing " [active]" marker on the currently captured monitor.
+  auto monitor_label = [](const MonitorInfo& m, int i, bool mark_active) {
+    std::string label = std::to_string(i + 1) + ": " + m.name + " (" +
+                        std::to_string(m.width) + "x" + std::to_string(m.height) +
+                        ")";
+    if (mark_active) {
+      label += " [active]";
+    }
+    return label;
+  };
+
+  std::string preview = "Monitor";
+  if (active_index >= 0 && active_index < static_cast<int>(monitors.size())) {
+    preview = monitor_label(monitors[active_index], active_index, true);
+  }
+  if (ImGui::BeginCombo("Monitor", preview.c_str())) {
+    // Closed->open transition: ask the caller to refresh the display list.
+    if (!state->monitor_combo_open) {
+      state->monitor_combo_open = true;
+      action.kind = TopBarAction::RefreshDisplays;
+    }
+    for (int i = 0; i < static_cast<int>(monitors.size()); ++i) {
+      const std::string label =
+          monitor_label(monitors[i], i, i == active_index);
+      if (ImGui::Selectable(label.c_str(), i == active_index)) {
+        if (i != active_index) {
+          action.kind = TopBarAction::SwitchMonitor;
+          action.monitor_index = i;
+        }
+      }
+    }
+    ImGui::EndCombo();
+  } else {
+    state->monitor_combo_open = false;
+  }
 
   ImGui::End();
   return action;

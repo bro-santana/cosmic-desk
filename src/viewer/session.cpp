@@ -50,6 +50,37 @@ std::string generate_pin() {
     return pin;
 }
 
+// COSMIC MODIFICATION (M5): converts the libgamestream CosmicDisplays linked
+// list (owned by the caller) into the status snapshot's vector. The list is
+// in document order, which is also the host's platf::display_names() ordering
+// (the index contract, docs/PROTOCOL.md).
+std::vector<DisplayInfo> displays_to_vector(PCOSMIC_DISPLAY displays) {
+    std::vector<DisplayInfo> out;
+    for (PCOSMIC_DISPLAY d = displays; d != nullptr; d = d->next) {
+        DisplayInfo info;
+        info.name = d->name != nullptr ? d->name : "";
+        info.width = d->width;
+        info.height = d->height;
+        info.fps = d->fps;
+        info.primary = d->primary;
+        info.active = d->active;
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+// COSMIC MODIFICATION (M5): index of the first active display in the snapshot,
+// or 0 when none is marked active (stock Sunshine host, or a host that never
+// sets the flag).
+int active_display_index(const std::vector<DisplayInfo>& displays) {
+    for (size_t i = 0; i < displays.size(); ++i) {
+        if (displays[i].active) {
+            return static_cast<int>(i);
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 const char* to_string(ViewerState state) {
@@ -98,31 +129,12 @@ void Session::start_connect(const std::string& host_ip, int port) {
     // Snapshot the stream settings on the main thread before the worker starts
     // (plan M4.4): the user can keep editing sliders mid-connect, and reading
     // the plain scalar members from the worker would race those writes. The
-    // worker gets this copy by value.
+    // worker gets this copy by value. M5: carry the resolution mode; "Host
+    // native" is resolved from the just-fetched CosmicDisplays in the worker.
     StreamPrefs prefs;
-    switch (settings_.resolution_mode) {
-    case ResolutionMode::HostNative:
-        // M5 resolves host-native from /serverinfo; 1920x1080 for now.
-        prefs.width = 1920;
-        prefs.height = 1080;
-        break;
-    case ResolutionMode::R1080p:
-        prefs.width = 1920;
-        prefs.height = 1080;
-        break;
-    case ResolutionMode::R1440p:
-        prefs.width = 2560;
-        prefs.height = 1440;
-        break;
-    case ResolutionMode::R2160p:
-        prefs.width = 3840;
-        prefs.height = 2160;
-        break;
-    case ResolutionMode::Custom:
-        prefs.width = settings_.custom_width;
-        prefs.height = settings_.custom_height;
-        break;
-    }
+    prefs.mode = settings_.resolution_mode;
+    prefs.custom_w = settings_.custom_width;
+    prefs.custom_h = settings_.custom_height;
     prefs.fps = settings_.fps;
     prefs.bitrate_kbps = settings_.bitrate_kbps;
 
@@ -153,6 +165,68 @@ bool Session::is_streaming() const {
     return status_.state == ViewerState::Streaming;
 }
 
+// COSMIC MODIFICATION (M5): re-fetches /serverinfo on a short-lived thread and
+// publishes the fresh display list + active index into the status snapshot.
+// Guarded against re-entry: a second call while one refresh is in flight is a
+// no-op. The refresh thread only runs while the session worker is alive
+// (streaming): it reads server_, which the worker owns, and the worker joins
+// the refresh thread in its tail teardown before server_ goes away.
+void Session::refresh_displays() {
+    // Hold the mutex across the spawn so it is atomic with the
+    // refresh_allowed_ check: the worker cannot set refresh_allowed_ = false
+    // and join between our check and the thread assignment.
+    std::lock_guard lock(mutex_);
+    // Only refresh while the worker is blocked in LiStartConnection():
+    // the refresh thread shares libgamestream's static curl handle with
+    // the worker, which must not be doing HTTP at the same time.
+    if (refresh_running_ || !refresh_allowed_) {
+        return;  // A refresh is already in flight, or not streaming.
+    }
+    refresh_running_ = true;
+    // Reuse the thread slot. A previous refresh has finished (refresh_running_
+    // was false), so this join returns immediately; without it, assigning a new
+    // thread to a joinable std::thread would call std::terminate.
+    if (refresh_thread_.joinable()) {
+        refresh_thread_.join();
+    }
+    refresh_thread_ = std::thread(&Session::refresh_worker, this);
+}
+
+void Session::refresh_worker() {
+    // gs_load_serverinfo re-fetches /serverinfo (HTTPS first, then HTTP) and
+    // re-parses the CosmicDisplays block into server_.displays. It shares the
+    // libgamestream static curl handle with the session worker, but the worker
+    // is blocked in LiStartConnection() while streaming and does no HTTP, so
+    // the handle is never used concurrently. curl_easy_init() (http_init) is
+    // also safe to have been called once from the worker before we get here.
+    const int ret = gs_load_serverinfo(&server_);
+    if (ret != GS_OK) {
+        // Keep the previous snapshot; a failed refresh must not blank the
+        // dropdown. gs_error is a shared global, so read it before any other
+        // libgamestream call could overwrite it.
+        std::string error = gs_error != nullptr ? gs_error : "refresh failed";
+        std::lock_guard lock(mutex_);
+        refresh_running_ = false;
+        status_.message = "Monitor refresh failed: " + error;
+        return;
+    }
+    std::lock_guard lock(mutex_);
+    status_.displays = displays_to_vector(server_.displays);
+    status_.active_display = active_display_index(status_.displays);
+    refresh_running_ = false;
+}
+
+// COSMIC MODIFICATION (M5): records a monitor switch locally. The host has
+// already switched capture via the synthesized Ctrl+Alt+Shift+F(1+i) hotkey;
+// this keeps the dropdown's [active] marker in sync without another
+// /serverinfo round-trip.
+void Session::set_active_display(int index) {
+    std::lock_guard lock(mutex_);
+    if (index >= 0 && index < static_cast<int>(status_.displays.size())) {
+        status_.active_display = index;
+    }
+}
+
 void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
     // server.serverInfo.address points into this buffer for the whole session,
     // so it must outlive gs_init and stay put.
@@ -171,7 +245,13 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
     std::error_code ec;
     std::filesystem::create_directories(key_dir, ec);
 
-    SERVER_DATA server = {};
+    // COSMIC MODIFICATION (M5): server_ is a member so the monitor-refresh
+    // thread can re-fetch /serverinfo against it mid-stream. Zero it at the
+    // start of each connection; gs_init repopulates it. (The previous
+    // connection's malloc'd fields are leaked here, matching the pre-M5
+    // behavior of the local SERVER_DATA going out of scope.)
+    server_ = {};
+    SERVER_DATA& server = server_;
     const int init_ret = gs_init(&server, address.data(), http_port,
                                  key_dir.string().c_str(), 1 /*logLevel*/,
                                  true /*unsupported*/);
@@ -180,6 +260,15 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
                    gs_error != nullptr ? gs_error : "Failed to reach host",
                    "", http_port);
         return;
+    }
+    // COSMIC MODIFICATION (M5): publish the host's display list + active index
+    // into the status snapshot. The worker owns server.displays for the whole
+    // session; the snapshot copies the strings so the refresh thread can
+    // replace the list later without invalidating UI-held copies.
+    {
+        std::lock_guard lock(mutex_);
+        status_.displays = displays_to_vector(server.displays);
+        status_.active_display = active_display_index(status_.displays);
     }
     // Host reachable: record it as a recent host (plan M3.3). Runs on the
     // worker thread; add_recent_host is mutex-protected against the main
@@ -252,10 +341,51 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
     // (plan M4.4). packetSize/streamingRemotely/encryptionFlags mirror
     // moonlight-embedded's config.c defaults (1392 bytes, STREAM_CFG_AUTO,
     // ENCFLG_ALL for CPUs with AES-NI, which every x86-64 CPU since ~2011 has).
+    //
+    // COSMIC MODIFICATION (M5): "Host native" resolves to the active display's
+    // WxH from the just-fetched CosmicDisplays snapshot. When the list is empty
+    // or the active entry has width==0 the host is stock Sunshine (no
+    // CosmicDisplays block) and we fall back to 1920x1080, as documented in
+    // docs/PROTOCOL.md.
+    int stream_width = 0;
+    int stream_height = 0;
+    switch (prefs.mode) {
+    case ResolutionMode::HostNative: {
+        std::lock_guard lock(mutex_);
+        const std::vector<DisplayInfo>& displays = status_.displays;
+        const int active = active_display_index(displays);
+        if (active < static_cast<int>(displays.size()) &&
+            displays[active].width > 0 && displays[active].height > 0) {
+            stream_width = displays[active].width;
+            stream_height = displays[active].height;
+        } else {
+            // Stock Sunshine host: no CosmicDisplays block.
+            stream_width = 1920;
+            stream_height = 1080;
+        }
+        break;
+    }
+    case ResolutionMode::R1080p:
+        stream_width = 1920;
+        stream_height = 1080;
+        break;
+    case ResolutionMode::R1440p:
+        stream_width = 2560;
+        stream_height = 1440;
+        break;
+    case ResolutionMode::R2160p:
+        stream_width = 3840;
+        stream_height = 2160;
+        break;
+    case ResolutionMode::Custom:
+        stream_width = prefs.custom_w;
+        stream_height = prefs.custom_h;
+        break;
+    }
     STREAM_CONFIGURATION stream_config;
     LiInitializeStreamConfiguration(&stream_config);
-    stream_config.width = prefs.width;
-    stream_config.height = prefs.height;
+    stream_config.width = stream_width;
+    stream_config.height = stream_height;
     stream_config.fps = prefs.fps;
     stream_config.bitrate = prefs.bitrate_kbps;
     stream_config.packetSize = 1392;
@@ -319,10 +449,36 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs) {
     // moonlight-common-c internal threads do the networking. The main thread
     // polls status() and calls end_session() to unblock us.
     s_active = this;
+    {
+        std::lock_guard lock(mutex_);
+        // COSMIC MODIFICATION (M5): from here until LiStartConnection returns
+        // the worker does no libgamestream HTTP, so the monitor-refresh thread
+        // may safely share the static curl handle.
+        refresh_allowed_ = true;
+    }
     set_status(ViewerState::Streaming, "Streaming", "", http_port);
     LiStartConnection(&server.serverInfo, &stream_config, &conn, &video, &audio,
                       nullptr, 0, nullptr, 0);
     s_active = nullptr;
+    {
+        std::lock_guard lock(mutex_);
+        refresh_allowed_ = false;
+    }
+
+    // COSMIC MODIFICATION (M5): join the refresh thread BEFORE gs_quit_app:
+    // the refresh thread shares libgamestream's static curl handle with the
+    // worker, and gs_quit_app does HTTP on it. Joining first guarantees the
+    // handle is never used concurrently. (If a refresh is in flight this can
+    // wait up to the refresh's 30 s curl timeout; the session is ending
+    // anyway.) Not holding the mutex here: the refresh thread takes it when
+    // publishing its snapshot, and joining while holding it would deadlock.
+    if (refresh_thread_.joinable()) {
+        refresh_thread_.join();
+    }
+    {
+        std::lock_guard lock(mutex_);
+        refresh_running_ = false;
+    }
 
     LiStopConnection();
     gs_quit_app(&server);
