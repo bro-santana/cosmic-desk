@@ -21,9 +21,59 @@ add_subdirectory(third-party/imgui)
 add_subdirectory(host/sunshine)
 
 # ---------------------------------------------------------------------------
+# cosmic_libgamestream: vendored moonlight-embedded pairing/HTTPS client (M2).
+# Linked into cosmicdesk (M2.2); its curl/expat/OpenSSL/rpcrt4 deps are PUBLIC
+# so the executable inherits them.
+# ---------------------------------------------------------------------------
+add_subdirectory(third-party/libgamestream)
+
+# ---------------------------------------------------------------------------
+# cosmic_moonlight_common: full moonlight-common-c viewer library (M2).
+# The submodule's own CMakeLists is NOT added as a subdirectory: it would
+# re-add_subdirectory(enet), clashing with the enet target host/sunshine
+# already creates. We mirror its source list and include dirs manually and
+# link the existing enet target. Linked into cosmicdesk (M2.2).
+# ---------------------------------------------------------------------------
+find_package(OpenSSL REQUIRED)
+
+file(GLOB COSMIC_MOONLIGHT_COMMON_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/src/*.c
+)
+# RtspParser.c and the nanors trio (rs.c, oblas_common.c, oblas_lite.c) are
+# compiled into cosmic_host (host/sunshine/CMakeLists.txt) and must not be
+# duplicated here, or the final link fails with duplicate symbols. cosmic_host
+# is listed AFTER cosmic_moonlight_common on the cosmicdesk link line, so the
+# linker resolves the RtspParser/FEC references from cosmic_host's objects.
+list(REMOVE_ITEM COSMIC_MOONLIGHT_COMMON_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/src/RtspParser.c
+)
+
+add_library(cosmic_moonlight_common STATIC ${COSMIC_MOONLIGHT_COMMON_SOURCES})
+
+# src/ is PUBLIC so future consumers (the viewer) can include <Limelight.h>.
+target_include_directories(cosmic_moonlight_common PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/src
+)
+target_include_directories(cosmic_moonlight_common PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/nanors
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/nanors/deps/obl
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/enet/include
+)
+
+# Mirrors the submodule's CMakeLists compile definition.
+target_compile_definitions(cosmic_moonlight_common PRIVATE HAS_SOCKLEN_T)
+
+target_link_libraries(cosmic_moonlight_common PRIVATE
+    enet
+    OpenSSL::Crypto
+)
+
+# ---------------------------------------------------------------------------
 # cosmicdesk: the single unified binary (host role + viewer role + UI).
 # M0 scope: SDL window, ImGui, tray icon, settings file.
 # M1.3: host glue (src/hostglue/host.cpp) boots the vendored host at launch.
+# M2.2: viewer session (src/viewer/session.cpp) + decoder/audio stubs.
 # ---------------------------------------------------------------------------
 add_executable(cosmicdesk
     src/main.cpp
@@ -32,6 +82,12 @@ add_executable(cosmicdesk
     src/hostglue/pin_bridge.cpp
     src/ui/pin_dialog.cpp
     src/ui/tray.cpp
+    src/viewer/session.cpp
+    src/viewer/decoder.cpp
+    src/viewer/vrenderer.cpp
+    src/viewer/audio.cpp
+    src/viewer/input.cpp
+    src/viewer/keymap.cpp
 )
 
 target_include_directories(cosmicdesk PRIVATE
@@ -39,6 +95,9 @@ target_include_directories(cosmicdesk PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third-party/tray
     # host.cpp includes vendored Sunshine headers as "src/..." (host/sunshine root).
     ${CMAKE_CURRENT_SOURCE_DIR}/host/sunshine
+    # src/viewer/*.cpp include <Limelight.h> and <client.h>.
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/libgamestream
 )
 
 # cosmic_host is C++23; the glue and everything else in this binary must agree.
@@ -50,7 +109,13 @@ if(WIN32)
     target_link_libraries(cosmicdesk PRIVATE SDL2::SDL2main)
 endif()
 
+# Link order matters: cosmic_moonlight_common first, then cosmic_libgamestream,
+# then cosmic_host. RtspParser.c and the nanors trio live only in cosmic_host,
+# so the linker must see cosmic_moonlight_common's references to them before it
+# reaches cosmic_host's objects that satisfy them.
 target_link_libraries(cosmicdesk PRIVATE
+    cosmic_moonlight_common
+    cosmic_libgamestream
     cosmic_host
     cosmic_imgui
     nlohmann_json::nlohmann_json

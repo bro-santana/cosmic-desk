@@ -22,7 +22,7 @@ licensed. The repository's `LICENSE` file is GPL-3.0.
 |---|---|---|---|---|
 | Dear ImGui + SDL2/SDL_Renderer backends | https://github.com/ocornut/imgui (MIT) | tag `v1.91.9`, commit `97428e8ac99e339ce05eee531cf55b77b29ea709` | Vendored, unmodified | `third-party/imgui/` |
 | tray (single-header tray icon) | https://github.com/zserge/tray (MIT) | commit `8dd1358b92562faf7c032cf5362fa97cbc7e13e9` | Vendored, **modified** | `third-party/tray/tray.h` |
-| moonlight-common-c (+ bundled `enet`, `nanors`) | https://github.com/moonlight-stream/moonlight-common-c (GPL-3.0) | see `git submodule status` | Submodule, unmodified | `third-party/moonlight-common-c/` |
+| moonlight-common-c (+ bundled `enet`, `nanors`) | https://github.com/moonlight-stream/moonlight-common-c (GPL-3.0) | see `git submodule status` | Submodule, unmodified. The full library is built for the viewer (`cosmic_moonlight_common`); the host uses its headers and the bundled `enet` | `third-party/moonlight-common-c/` |
 | Sunshine host core (`nvhttp`, `rtsp`, `stream`, `video`, `audio`, `input`, `crypto`, `config`, platform capture/injection) | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` (newer Sunshine releases removed Linux input injection (inputtino), which is why this tag is pinned) | Vendored, **modified** | `host/sunshine/` |
 | Sunshine uinput udev rule (renamed) | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833` | Adapted | `packaging/linux/60-cosmicdesk-input.rules` |
 | Simple-Web-Server (Sunshine's HTTP(S) server dependency) | https://github.com/LizardByte-infrastructure/Simple-Web-Server (MIT) | commit `546895a93a29062bb178367b46c7afb72da9881e` | Vendored, unmodified | `third-party/Simple-Web-Server/` |
@@ -32,18 +32,9 @@ licensed. The repository's `LICENSE` file is GPL-3.0.
 | glad (GL/EGL loader generator, Linux VAAPI) | https://github.com/Dav1dde/glad (MIT; Khronos spec headers Apache-2.0) | commit `73db193f853e2ee079bf3ca8a64aa2eaf6459043` | Vendored, unmodified | `third-party/glad/` |
 | inputtino (Linux uinput injection) | https://github.com/games-on-whales/inputtino (MIT) | commit `f4ce2b0df536ef309e9ff318f75b460f7097d7c1` | Submodule, unmodified | `third-party/inputtino/` |
 | Sunshine DXGI HLSL capture shaders | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` | Vendored, unmodified | `assets/shaders/` |
-
-### Planned entries (not yet imported)
-
-These are scheduled by the milestones in `PLAN.md`; each gets a row above with its
-pinned revision at the moment it is imported.
-
-| Component | Upstream | Milestone | Planned location |
-|---|---|---|---|
-| libgamestream (client pairing: `client.c`, `http.c`, `mkcert.c`, `xml.c`) | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | M2 | `third-party/libgamestream/` |
-| FFmpeg decode + SDL render + Opus audio playback structure | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | M2 | Pattern → `src/viewer/{decoder,vrenderer,audio}.cpp` |
-| SDL scancode → Windows VK translation table | https://github.com/moonlight-stream/moonlight-qt (GPL-3.0) | M2 | `src/viewer/keymap.cpp` |
-| Keyboard grab / fullscreen / escape-combo handling | https://github.com/moonlight-stream/moonlight-qt (GPL-3.0) | M4 | Pattern → `src/viewer/input.cpp` |
+| libgamestream (client pairing: `client.c`, `http.c`, `mkcert.c`, `xml.c`) | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | tag `v2.7.1`, commit `775444287305849ebdf4736c75298ad0713e2d5d` | Vendored, **modified** | `third-party/libgamestream/` |
+| FFmpeg decode + SDL render + Opus audio playback structure | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | tag `v2.7.1`, commit `775444287305849ebdf4736c75298ad0713e2d5d` | Pattern | `src/viewer/decoder.cpp`, `src/viewer/vrenderer.cpp`, `src/viewer/audio.cpp` |
+| SDL scancode → Windows VK table (`input/keymap.cpp`) | https://github.com/moonlight-stream/moonlight-qt (GPL-3.0) | tag `v6.1.0`, commit `f786e94c7b2f943e24e65d7d74deb539b827fc84` | Pattern/lifted, adapted | `src/viewer/keymap.cpp` (+ `src/viewer/input.cpp` follows the same upstream's input handling pattern) |
 
 ## Modifications to vendored code
 
@@ -111,6 +102,23 @@ comment):
    subdirectories (docs/tests only; not needed to build).
 2. Removed the top-level `tests/` directory and the stale `.gitmodules` /
    `.readthedocs.yaml` files (they referenced the removed nested submodules/docs).
+
+### `third-party/libgamestream/`
+
+1. **Windows UUID shim.** Upstream `client.c` includes `<uuid/uuid.h>` and calls
+   `uuid_generate_random`/`uuid_unparse` for the `uniqueid`/`uuid` query
+   parameters. MSYS2 UCRT64 has no mingw-w64 libuuid package, so
+   `uuid/uuid.h` is a new shim (marked `COSMIC MODIFICATION`) that provides the
+   same API on Windows via `UuidCreate` from `<rpc.h>` (linked from `rpcrt4`);
+   on Linux it includes the system `<uuid/uuid.h>` unchanged. The shim is only
+   on the include path on Windows (see `CMakeLists.txt`).
+2. `CMakeLists.txt` is new (upstream builds a shared library against avahi and
+   its own moonlight-common-c copy; we build the four-file subset as a static
+   library against system packages).
+3. `client.c` Windows portability fixes (upstream is Linux-only), each marked
+   `COSMIC MODIFICATION` in the source: `<arpa/inet.h>` → `<winsock2.h>`
+   (for `htonl`), two-argument `mkdir()` → `_mkdir()` (from `<direct.h>`),
+   and BSD `u_int32_t` → standard `uint32_t`.
 
 ## Diffing a vendored component against upstream
 

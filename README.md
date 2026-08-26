@@ -7,14 +7,15 @@ hosts your screen and views someone else's. It runs quietly in the tray, starts 
 PC, and connects directly by IP — there is no account, no connection-ID broker and no
 relay server.
 
-> **Status: early development.** Milestone M1 is complete — the app now hosts the
-> desktop over the Moonlight protocol: pair with a stock Moonlight client using
-> Cosmic Desk's native PIN dialog, then stream video, audio and input. The app
-> boots to the tray and runs the host automatically. The viewer role (connecting
-> *to* a host from Cosmic Desk) is still not implemented (M2). The two-machine
-> interop matrix from [`PLAN.md`](PLAN.md) §9 still has to be run manually against
-> a stock Moonlight client on a second machine — this has not been machine-validated
-> yet. See [`PLAN.md`](PLAN.md) for the full milestone plan.
+> **Status: early development.** Milestones M1 and M2 are complete — the app hosts
+> the desktop over the Moonlight protocol (pair with a stock Moonlight client using
+> Cosmic Desk's native PIN dialog, then stream video, audio and input) and can also
+> connect *to* a host by IP as a viewer: PIN pairing shown in the app, H.264 video
+> decode, audio playback, keyboard/mouse forwarding, and Ctrl+Alt+Shift+Q to exit.
+> The two-machine interop matrix from [`PLAN.md`](PLAN.md) §9 — our host against a
+> stock Moonlight client, and our viewer against a stock Sunshine host — still has
+> to be run manually and has not been machine-validated yet. See [`PLAN.md`](PLAN.md)
+> for the full milestone plan.
 
 ## Features (target scope)
 

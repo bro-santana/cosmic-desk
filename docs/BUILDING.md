@@ -81,6 +81,7 @@ From M1 onward, also:
 sudo apt install -y \
   libavcodec-dev libavutil-dev libswscale-dev libavfilter-dev \
   libssl-dev libcurl4-openssl-dev libexpat1-dev libopus-dev \
+  uuid-dev \
   libboost-dev libboost-log-dev libboost-locale-dev libboost-program-options-dev \
   libx11-dev libxfixes-dev libxrandr-dev libxtst-dev \
   libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \

@@ -286,6 +286,7 @@ sudo apt update && sudo apt install -y \
   libsdl2-dev \
   libavcodec-dev libavutil-dev libswscale-dev libavfilter-dev \
   libssl-dev libcurl4-openssl-dev libexpat1-dev libopus-dev \
+  uuid-dev \
   libboost-dev libboost-log-dev libboost-locale-dev libboost-program-options-dev \
   nlohmann-json3-dev \
   libx11-dev libxfixes-dev libxrandr-dev libxtst-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
@@ -316,6 +317,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | OpenSSL | pairing crypto, TLS | `…-openssl` | `libssl-dev` | system |
 | libcurl | libgamestream HTTPS | `…-curl` | `libcurl4-openssl-dev` | system |
 | expat | libgamestream XML | `…-expat` | `libexpat1-dev` | system |
+| libuuid | libgamestream `uniqueid`/`uuid` params | none (vendored shim, `rpcrt4`) | `uuid-dev` | shim on Windows, system on Linux |
 | libopus | audio enc/dec | `…-opus` | `libopus-dev` | system |
 | Boost | Sunshine internals | `…-boost` | `libboost-*-dev` | system |
 | nlohmann-json | cosmic.json | `…-nlohmann-json` | `nlohmann-json3-dev` | system |
