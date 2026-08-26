@@ -10,6 +10,28 @@ Cosmic Desk acts as both **client** and **server**, making it easier to use than
 
 File transfer, clipboard sync, gamepads.
 
+
+## Known limitations
+
+- **Windows: no session-0 service.** A real Windows service cannot capture the
+  interactive desktop or inject input into it, so Cosmic Desk autostarts as a per-user
+  tray application instead. It therefore cannot be reached before a user logs in, and
+  cannot see UAC secure-desktop prompts at the moment.
+- **Linux: X11 only.** Wayland capture (portal/PipeWire) is planned but not in v1; log in
+  with an Xorg session.
+- **Direct connections only.** For access across the internet you must forward these
+  ports yourself. They all derive from the `port_base` setting (default 47989); the
+  authoritative table lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md):
+
+  | Port  | Proto     | Purpose                            |
+  |-------|-----------|------------------------------------|
+  | 47984 | TCP/HTTPS | Pairing completion, authenticated API |
+  | 47989 | TCP/HTTP  | `serverinfo`, pairing phases 1-4    |
+  | 47998 | UDP       | Video RTP                          |
+  | 47999 | UDP       | Control / input (ENet, encrypted)  |
+  | 48000 | UDP       | Audio RTP                          |
+  | 48010 | TCP       | RTSP                               |
+
 ## Building
 
 See [`docs/BUILDING.md`](docs/BUILDING.md). In short:
@@ -74,24 +96,3 @@ Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-
 see [`LICENSE`](LICENSE). One vendored component, libdisplaydevice, is AGPL-3.0;
 combining it with the GPL-3.0 code makes the combined work subject to AGPL-3.0 terms.
 Cosmic Desk is not affiliated with or endorsed by the LizardByte or Moonlight projects.
-
-## Known limitations
-
-- **Windows: no session-0 service.** A real Windows service cannot capture the
-  interactive desktop or inject input into it, so Cosmic Desk autostarts as a per-user
-  tray application instead. It therefore cannot be reached before a user logs in, and
-  cannot see UAC secure-desktop prompts at the moment.
-- **Linux: X11 only.** Wayland capture (portal/PipeWire) is planned but not in v1; log in
-  with an Xorg session.
-- **Direct connections only.** For access across the internet you must forward these
-  ports yourself. They all derive from the `port_base` setting (default 47989); the
-  authoritative table lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md):
-
-  | Port  | Proto     | Purpose                            |
-  |-------|-----------|------------------------------------|
-  | 47984 | TCP/HTTPS | Pairing completion, authenticated API |
-  | 47989 | TCP/HTTP  | `serverinfo`, pairing phases 1-4    |
-  | 47998 | UDP       | Video RTP                          |
-  | 47999 | UDP       | Control / input (ENet, encrypted)  |
-  | 48000 | UDP       | Audio RTP                          |
-  | 48010 | TCP       | RTSP                               |
