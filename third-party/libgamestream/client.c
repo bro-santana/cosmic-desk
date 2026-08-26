@@ -106,8 +106,19 @@ static int load_unique_id(const char* keyDirectory) {
   snprintf(uniqueFilePath, PATH_MAX, "%s/%s", keyDirectory, UNIQUE_FILE_NAME);
 
   FILE *fd = fopen(uniqueFilePath, "r");
-  if (fd == NULL || fread(unique_id, UNIQUEID_CHARS, 1, fd) != UNIQUEID_CHARS) {
-    snprintf(unique_id,UNIQUEID_CHARS+1,"0123456789ABCDEF");
+  // COSMIC MODIFICATION: generate a random, persistent client ID instead of the
+  // fixed placeholder "0123456789ABCDEF" (which every install shared, so the
+  // host could not tell clients apart). Regenerate when the file is missing,
+  // unreadable, or still holds the old placeholder. The fread() check also fixes
+  // a bug where UNIQUEID_CHARS was compared against the item count (always 1).
+  bool generate = fd == NULL || fread(unique_id, UNIQUEID_CHARS, 1, fd) != 1 ||
+                  strncmp(unique_id, "0123456789ABCDEF", UNIQUEID_CHARS) == 0;
+  if (generate) {
+    unsigned char raw_id[UNIQUEID_BYTES];
+    RAND_bytes(raw_id, sizeof(raw_id));
+    for (int i = 0; i < UNIQUEID_BYTES; i++) {
+      snprintf(unique_id + i * 2, 3, "%02x", raw_id[i]);
+    }
 
     if (fd)
       fclose(fd);
