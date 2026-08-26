@@ -4,16 +4,14 @@ name: nightly
 # workflow file, which is why the build passes ref=develop explicitly: the
 # nightly must always build develop, not whatever branch is default.
 on:
-  push:
-    branches: [develop]
   schedule:
     - cron: "30 2 * * *"
 
 permissions:
   contents: write
 
-# A develop push and the nightly cron can overlap; serializing them keeps the
-# release update (delete-then-recreate) from racing itself.
+# The release update (delete-then-recreate) is not idempotent; serializing
+# runs keeps overlapping builds from racing themselves.
 concurrency: nightly
 
 jobs:
