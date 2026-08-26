@@ -1,41 +1,14 @@
-<p align="center">
+<p align="left">
   <img src="assets/cosmicdesk-logo-text.png" alt="Cosmic Desk" width="568" />
 </p>
 
-A minimal AnyDesk/RustDesk-style remote desktop tool built on the **Moonlight protocol**.
+A minimal remote desktop tool built on the **Moonlight protocol**.
 
-Cosmic Desk is **one application that is both ends of the connection**: the same binary
-hosts your screen and views someone else's. It runs quietly in the tray, starts with the
-PC, and connects directly by IP — there is no account, no connection-ID broker and no
-relay server.
+Cosmic Desk acts as both **client** and **server**, making it easier to use than other moonlight-based alternatives.
 
-> **Status: early development.** Milestones M1 through M6 are complete — the app
-> hosts the desktop over the Moonlight protocol (pair with a stock Moonlight client
-> using Cosmic Desk's native PIN dialog, then stream video, audio and input) and can
-> connect *to* a host by IP as a viewer: PIN pairing shown in the app, H.264 video
-> decode, audio playback, keyboard/mouse forwarding, full keyboard grab, fullscreen
-> mode, an auto-hiding top bar, seamless monitor switching mid-stream,
-> resolution/bitrate/port settings, autostart at logon, and Windows/Linux packaging.
-> Remaining: the two-machine interop matrix from [`PLAN.md`](PLAN.md) §9 — our host
-> against a stock Moonlight client, and our viewer against a stock Sunshine host —
-> still has to be run manually and has not been machine-validated yet. See
-> [`PLAN.md`](PLAN.md) for the full milestone plan.
+## TODOs
 
-## Features (target scope)
-
-- Connect to a host by IP address
-- Moonlight PIN pairing, confirmed with a **native dialog** — no web interface;
-  after the first pairing a machine reconnects without confirmation
-- Background tray application that starts with the PC
-- Remote view in **fullscreen or windowed** mode
-- Top bar to **switch which monitor is being presented**, seamlessly mid-stream, and to
-  exit the session
-- **Captures all input, including Alt+Tab**, while the viewer window is focused
-- Selectable **resolution and encoding bitrate**; defaults to the host's desktop resolution
-- Windows and Linux, in both roles
-
-Deliberately out of scope: file transfer, clipboard sync, gamepads, session recording,
-unattended access via a relay, and the rest of the commercial feature set.
+File transfer, clipboard sync, gamepads.
 
 ## Building
 
@@ -72,10 +45,9 @@ branch.
 
 ## Code provenance & licensing
 
-**Cosmic Desk is assembled from existing open-source projects rather than written from
-scratch.** The streaming stack — capture, encoding, pairing, RTSP, and the client-side
-protocol core — comes from mature GPL-3.0 projects. Code is copied, adapted and in some
-cases merely imitated; in all cases it is credited.
+**Cosmic Desk is assembled from existing open-source projects.**
+The streaming stack — capture, encoding, pairing, RTSP, and the client-side
+protocol core — comes from mature GPL-3.0 projects.
 
 [`docs/VENDOR.md`](docs/VENDOR.md) is the authoritative inventory: it lists every
 component, the exact upstream revision it was taken from, whether it was modified, and
@@ -108,7 +80,7 @@ Cosmic Desk is not affiliated with or endorsed by the LizardByte or Moonlight pr
 - **Windows: no session-0 service.** A real Windows service cannot capture the
   interactive desktop or inject input into it, so Cosmic Desk autostarts as a per-user
   tray application instead. It therefore cannot be reached before a user logs in, and
-  cannot see UAC secure-desktop prompts.
+  cannot see UAC secure-desktop prompts at the moment.
 - **Linux: X11 only.** Wayland capture (portal/PipeWire) is planned but not in v1; log in
   with an Xorg session.
 - **Direct connections only.** For access across the internet you must forward these
