@@ -4,7 +4,7 @@
 
 A minimal remote desktop tool built on the **Moonlight protocol** and based on the **Sunshine** project.
 
-Cosmic Desk acts as both **client** and **server**, making it easier to use than other moonlight-based alternatives.
+Cosmic Desk acts as both **client** and **server**, making it easier to use as a remote desktop app than other moonlight-based alternatives.
 
 ## TODOs
 
