@@ -25,6 +25,11 @@ struct InputActions {
 // geometry is known (main.cpp, on entering Viewing mode).
 void init(int stream_width, int stream_height);
 
+// Tells the mouse mapping how tall the reserved top bar strip is (in window
+// pixels). The stream is letterboxed below it, so the pointer maps into the
+// visible video rect, not the whole window. Call once the bar height is known.
+void set_topbar_height(float height);
+
 // Forwards one SDL event to the host while streaming. Returns true if the
 // event was consumed and must not reach ImGui. imgui_wants_kb / imgui_wants_mouse
 // gate keyboard/mouse forwarding while the overlay is being interacted with;

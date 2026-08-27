@@ -26,6 +26,7 @@
 #include <imgui_impl_sdlrenderer2.h>
 
 #include <cstdio>
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -544,15 +545,28 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Video area: the whole renderer output minus the top bar strip,
+            // which now owns its own band instead of overlaying the stream.
+            // The strip height is derived from the scaled ImGui style, so it
+            // tracks DPI changes; the renderer output is in the same pixel
+            // space the ImGui viewport uses (per-monitor-v2 DPI awareness).
+            int out_w = 0;
+            int out_h = 0;
+            SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
+            const float bar_h = cosmic::ui::topbar_height();
+            const int strip_h = std::min(static_cast<int>(bar_h), out_h);
+            const SDL_Rect video_area{0, strip_h, out_w, out_h - strip_h};
+            cosmic::viewer::input::set_topbar_height(bar_h);
+
             // Latest-frame exchange (plan D2): grab the newest decoded frame
             // without blocking, upload it, and hand it back to the decoder.
             AVFrame* frame =
                 vrenderer_active ? cosmic::viewer::decoder_acquire_frame() : nullptr;
             if (frame != nullptr) {
-                cosmic::viewer::vrenderer_render(renderer, frame);
+                cosmic::viewer::vrenderer_render(renderer, frame, video_area);
                 cosmic::viewer::decoder_release_frame(frame);
             } else {
-                cosmic::viewer::vrenderer_present_no_frame(renderer);
+                cosmic::viewer::vrenderer_present_no_frame(renderer, video_area);
             }
 
             ImGui_ImplSDLRenderer2_NewFrame();

@@ -10,12 +10,32 @@ extern "C" {
 #include <libavutil/frame.h>
 }
 
+#include <algorithm>
 #include <cstdio>
 
 namespace cosmic::viewer {
 namespace {
 
 SDL_Texture* g_texture = nullptr;
+int g_stream_width = 0;
+int g_stream_height = 0;
+
+// Centered destination rect inside `area` that fits a src_w x src_h source
+// without stretching: the scale is the smaller of the two axis ratios.
+SDL_Rect fit_rect(const SDL_Rect& area, int src_w, int src_h) {
+    if (area.w <= 0 || area.h <= 0 || src_w <= 0 || src_h <= 0) {
+        return area;
+    }
+    const float scale = std::min(
+        static_cast<float>(area.w) / static_cast<float>(src_w),
+        static_cast<float>(area.h) / static_cast<float>(src_h));
+    SDL_Rect dst;
+    dst.w = static_cast<int>(src_w * scale + 0.5f);
+    dst.h = static_cast<int>(src_h * scale + 0.5f);
+    dst.x = area.x + (area.w - dst.w) / 2;
+    dst.y = area.y + (area.h - dst.h) / 2;
+    return dst;
+}
 
 }  // namespace
 
@@ -30,23 +50,27 @@ int vrenderer_init(SDL_Renderer* renderer, int stream_width, int stream_height) 
         std::fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
         return -1;
     }
+    g_stream_width = stream_width;
+    g_stream_height = stream_height;
     return 0;
 }
 
-void vrenderer_render(SDL_Renderer* renderer, AVFrame* frame) {
+void vrenderer_render(SDL_Renderer* renderer, AVFrame* frame,
+                      const SDL_Rect& video_area) {
     if (frame == nullptr || g_texture == nullptr) {
-        vrenderer_present_no_frame(renderer);
+        vrenderer_present_no_frame(renderer, video_area);
         return;
     }
     SDL_UpdateYUVTexture(g_texture, nullptr, frame->data[0], frame->linesize[0],
                          frame->data[1], frame->linesize[1], frame->data[2],
                          frame->linesize[2]);
     SDL_RenderClear(renderer);
-    // NULL src/dst rects stretch the texture to the full renderer output size.
-    SDL_RenderCopy(renderer, g_texture, nullptr, nullptr);
+    const SDL_Rect dst = fit_rect(video_area, g_stream_width, g_stream_height);
+    SDL_RenderCopy(renderer, g_texture, nullptr, &dst);
 }
 
-void vrenderer_present_no_frame(SDL_Renderer* renderer) {
+void vrenderer_present_no_frame(SDL_Renderer* renderer,
+                                const SDL_Rect& video_area) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     // Redraw the last decoded frame instead of leaving the cleared black.
@@ -57,7 +81,8 @@ void vrenderer_present_no_frame(SDL_Renderer* renderer) {
     // streaming texture still holds the last upload, so re-presenting it is
     // free. Before the first frame there is no texture and the black stands.
     if (g_texture != nullptr) {
-        SDL_RenderCopy(renderer, g_texture, nullptr, nullptr);
+        const SDL_Rect dst = fit_rect(video_area, g_stream_width, g_stream_height);
+        SDL_RenderCopy(renderer, g_texture, nullptr, &dst);
     }
 }
 

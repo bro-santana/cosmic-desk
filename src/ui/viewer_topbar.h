@@ -33,6 +33,11 @@ struct MonitorInfo {
   bool active = false;
 };
 
+// Height (in window pixels) the bar reserves at the top of the window. The
+// caller subtracts this from the window to size the video area so the stream
+// never overlaps the bar. Valid once an ImGui context + scaled style exist.
+float topbar_height();
+
 // Auto-hide state, owned by the caller so it survives across frames.
 struct TopBarState {
   std::uint64_t last_motion_time_ms = 0;  // SDL_GetTicks64() of the last motion

@@ -29,6 +29,10 @@ float reveal_zone() {
 
 }  // namespace
 
+float topbar_height() {
+  return bar_height();
+}
+
 TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
                          const std::vector<MonitorInfo>& monitors,
                          int active_index) {

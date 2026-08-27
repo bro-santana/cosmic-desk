@@ -20,6 +20,7 @@ namespace {
 
 int g_stream_width = 0;
 int g_stream_height = 0;
+float g_topbar_height = 0.0f;
 
 // Keys and mouse buttons currently held down in the remote session (plan
 // M4.3). Main-thread only, like the rest of this file: handle_event() updates
@@ -120,10 +121,26 @@ bool handle_mouse_motion(const SDL_MouseMotionEvent& motion, SDL_Window* window)
     if (window_w <= 0 || window_h <= 0) {
         return true;
     }
-    // M2 renders stretch-fill, so map window coordinates proportionally into
-    // stream coordinates and clamp to the stream bounds.
-    int x = motion.x * g_stream_width / window_w;
-    int y = motion.y * g_stream_height / window_h;
+    // The stream is letterboxed into the window below the reserved top bar
+    // strip (mirrors vrenderer). Map the pointer within that visible rect into
+    // stream coordinates; clicks on the letterbox bars or the strip clamp to
+    // the nearest stream edge.
+    const int top = static_cast<int>(g_topbar_height);
+    const int area_w = window_w;
+    const int area_h = window_h - top;
+    int x = 0;
+    int y = 0;
+    if (area_h <= 0) {
+        return true;
+    }
+    const float scale = std::min(static_cast<float>(area_w) / g_stream_width,
+                                 static_cast<float>(area_h) / g_stream_height);
+    const int vid_w = static_cast<int>(g_stream_width * scale + 0.5f);
+    const int vid_h = static_cast<int>(g_stream_height * scale + 0.5f);
+    const int vid_x = (area_w - vid_w) / 2;
+    const int vid_y = top + (area_h - vid_h) / 2;
+    x = (motion.x - vid_x) * g_stream_width / vid_w;
+    y = (motion.y - vid_y) * g_stream_height / vid_h;
     x = std::clamp(x, 0, g_stream_width - 1);
     y = std::clamp(y, 0, g_stream_height - 1);
     LiSendMousePositionEvent(static_cast<short>(x), static_cast<short>(y),
@@ -173,6 +190,10 @@ bool handle_mouse_wheel(const SDL_MouseWheelEvent& wheel) {
 void init(int stream_width, int stream_height) {
     g_stream_width = stream_width;
     g_stream_height = stream_height;
+}
+
+void set_topbar_height(float height) {
+    g_topbar_height = height;
 }
 
 bool handle_event(const SDL_Event& event, SDL_Window* window,
