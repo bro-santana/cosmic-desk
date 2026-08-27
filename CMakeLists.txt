@@ -153,9 +153,17 @@ target_link_libraries(cosmicdesk PRIVATE
 if(WIN32)
     # shell32 provides ExtractIconEx for the tray icon.
     target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32)
-    # Console window is useful for M0..M5 logs; M6 packaging switches this off.
+    # GUI app by default (WIN32_EXECUTABLE TRUE): no console window, so closing
+    # the (never-shown) console cannot kill the tray app. Debug keeps a console
+    # for log output; override either way with -DCOSMIC_CONSOLE=ON/OFF.
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(COSMIC_CONSOLE_DEFAULT ON)
+    else()
+        set(COSMIC_CONSOLE_DEFAULT OFF)
+    endif()
+    option(COSMIC_CONSOLE "Keep the console window for log output" ${COSMIC_CONSOLE_DEFAULT})
     if(NOT COSMIC_CONSOLE)
-        set_target_properties(cosmicdesk PROPERTIES WIN32_EXECUTABLE FALSE)
+        set_target_properties(cosmicdesk PROPERTIES WIN32_EXECUTABLE TRUE)
     endif()
 else()
     # zserge/tray's AppIndicator backend pulls in GTK3 + libayatana-appindicator.
