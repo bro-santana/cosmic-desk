@@ -299,7 +299,6 @@ int main(int argc, char** argv) {
         g_session->start_connect(autoconnect_ip, settings.port_base);
     }
 
-    bool show_imgui_demo = false;
     bool show_settings = false;
 
     // Viewer renderer is created lazily once the negotiated stream dimensions
@@ -657,7 +656,7 @@ int main(int argc, char** argv) {
         const float ui_scale = cosmic::ui::scale();
         ImGui::SetNextWindowPos(ImVec2(20 * ui_scale, 20 * ui_scale),
                                 ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(560 * ui_scale, 320 * ui_scale),
+        ImGui::SetNextWindowSize(ImVec2(680 * ui_scale, 460 * ui_scale),
                                  ImGuiCond_FirstUseEver);
         ImGui::Begin("Cosmic Desk");
         // Keep UI strings ASCII-only: the default ImGui font has no glyphs
@@ -708,12 +707,7 @@ int main(int argc, char** argv) {
         ImGui::TextWrapped(
             "Closing this window hides Cosmic Desk to the tray; hosting keeps running. "
             "Use the tray menu to show it again or to quit.");
-        ImGui::Checkbox("Show Dear ImGui demo window", &show_imgui_demo);
         ImGui::End();
-
-        if (show_imgui_demo) {
-            ImGui::ShowDemoWindow(&show_imgui_demo);
-        }
 
         if (show_pin_dialog) {
             cosmic::ui::draw_pin_dialog(g_pending_client, show_pin_dialog, pin_result_ok);
