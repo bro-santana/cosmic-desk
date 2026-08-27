@@ -49,7 +49,7 @@ Tagged (`v*`) releases are published from CI on the
 - `CosmicDesk-windows-x64-setup.exe` — Inno Setup per-user installer (unsigned;
   SmartScreen will warn)
 - `cosmicdesk-linux-x64.tar.gz` — Linux tarball (no root required; udev rule is manual)
-- `cosmicdesk_<version>_amd64.deb` — Debian package for **Ubuntu 24.04+**
+- `cosmicdesk_<version>_amd64.deb` — Package targeting **Ubuntu 24.04+**
   (`sudo apt install ./cosmicdesk_<version>_amd64.deb`; input injection works out of
   the box)
 
