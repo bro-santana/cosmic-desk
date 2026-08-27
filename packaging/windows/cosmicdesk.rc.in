@@ -1,0 +1,4 @@
+// Cosmic Desk — Windows resource: embed the application icon so Explorer and
+// the taskbar show it instead of the generic executable icon.
+
+1 ICON "@COSMICDESK_ICON_PATH@"

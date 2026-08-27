@@ -6,6 +6,7 @@
 #include "ui/host_list.h"
 
 #include "ui/scale.h"
+#include "ui/theme.h"
 
 #include <imgui.h>
 
@@ -122,7 +123,7 @@ HostListAction draw_host_list(const std::vector<SavedHost>& hosts,
 
   ImGui::SameLine();
   ImGui::BeginDisabled(!has_selection || session_busy);
-  if (ImGui::Button("Connect")) {
+  if (AccentButton("Connect", Accent::Positive)) {
     action.kind = HostListAction::Connect;
     action.address = state->selected;
   }
@@ -151,7 +152,7 @@ HostListAction draw_host_list(const std::vector<SavedHost>& hosts,
     }
   }
   ImGui::SameLine();
-  if (ImGui::Button("Remove")) {
+  if (AccentButton("Remove", Accent::Destructive)) {
     state->remove_modal_open = true;
     state->modal_target = state->selected;
   }
@@ -327,7 +328,7 @@ HostListAction draw_host_list(const std::vector<SavedHost>& hosts,
         "This only forgets it on this machine. The host keeps this client "
         "paired until it is removed there; re-Pair if needed.");
     ImGui::Separator();
-    if (ImGui::Button("Remove")) {
+    if (AccentButton("Remove", Accent::Destructive)) {
       action.kind = HostListAction::Remove;
       action.address = state->modal_target;
       state->remove_modal_open = false;

@@ -1,6 +1,7 @@
 // Cosmic Desk — UI scale implementation. See scale.h for the contract.
 
 #include "ui/scale.h"
+#include "ui/theme.h"
 
 #include <SDL.h>
 #include <imgui.h>
@@ -82,7 +83,7 @@ bool apply(SDL_Window* window) {
     // ScaleAllSizes multiplies the style in place, so it must start from the
     // unscaled defaults every time rather than compounding the previous scale.
     ImGui::GetStyle() = ImGuiStyle();
-    ImGui::StyleColorsDark();
+    StyleColorsDefault();
     ImGui::GetStyle().ScaleAllSizes(g_scale);
 
     // Rasterize the default font at the scaled size instead of stretching the

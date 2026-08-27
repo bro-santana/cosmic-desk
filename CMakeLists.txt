@@ -97,6 +97,7 @@ add_executable(cosmicdesk
     src/ui/pin_dialog.cpp
     src/ui/scale.cpp
     src/ui/settings_window.cpp
+    src/ui/theme.cpp
     src/ui/tray.cpp
     src/ui/viewer_topbar.cpp
     src/viewer/session.cpp
@@ -124,6 +125,16 @@ if(WIN32)
     # SDL2main is a static library that calls into SDL2, so it has to be listed
     # before SDL2 on the link line.
     target_link_libraries(cosmicdesk PRIVATE SDL2::SDL2main)
+
+    # Embed assets/icon.ico as the executable's icon (Explorer/taskbar) instead
+    # of the generic one. The .rc is generated so the icon path is absolute —
+    # windres resolves relative paths against the build dir, not the source.
+    set(COSMICDESK_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.ico")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/packaging/windows")
+    configure_file(packaging/windows/cosmicdesk.rc.in
+                   ${CMAKE_BINARY_DIR}/packaging/windows/cosmicdesk.rc @ONLY)
+    target_sources(cosmicdesk PRIVATE
+        ${CMAKE_BINARY_DIR}/packaging/windows/cosmicdesk.rc)
 endif()
 
 # Link order matters: cosmic_moonlight_common first, then cosmic_libgamestream,

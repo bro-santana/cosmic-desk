@@ -12,6 +12,7 @@
 #include "ui/pin_dialog.h"
 #include "ui/scale.h"
 #include "ui/settings_window.h"
+#include "ui/theme.h"
 #include "ui/tray.h"
 #include "ui/viewer_topbar.h"
 #include "viewer/decoder.h"
@@ -222,7 +223,7 @@ int main(int argc, char** argv) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
+    cosmic::ui::StyleColorsDefault();
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
@@ -711,7 +712,7 @@ int main(int argc, char** argv) {
         cosmic::ui::draw_settings_window(settings, show_settings);
 
         ImGui::Render();
-        SDL_SetRenderDrawColor(renderer, 18, 18, 22, 255);
+        SDL_SetRenderDrawColor(renderer, 26, 28, 55, 255);  // #1a1c37 main_bg
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
