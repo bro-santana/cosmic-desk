@@ -5,9 +5,8 @@ scratch. **Every piece of third-party code in this repository is listed here**, 
 exact upstream revision it came from and any modifications we made. This file is the
 authoritative record; `README.md` links to it.
 
-Upstream projects below are GPL-3.0, AGPL-3.0 (libdisplaydevice — combining it with the
-GPL-3.0 code makes the combined work subject to AGPL-3.0 terms), or permissively
-licensed. The repository's `LICENSE` file is GPL-3.0.
+Upstream projects below are GPL-3.0 or permissively licensed. The repository's
+`LICENSE` file is GPL-3.0.
 
 ## Status legend
 
@@ -26,7 +25,7 @@ licensed. The repository's `LICENSE` file is GPL-3.0.
 | Sunshine host core (`nvhttp`, `rtsp`, `stream`, `video`, `audio`, `input`, `crypto`, `config`, platform capture/injection) | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` (newer Sunshine releases removed Linux input injection (inputtino), which is why this tag is pinned) | Vendored, **modified** | `host/sunshine/` |
 | Sunshine uinput udev rule (renamed) | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833` | Adapted | `packaging/linux/60-cosmicdesk-input.rules` |
 | Simple-Web-Server (Sunshine's HTTP(S) server dependency) | https://github.com/LizardByte-infrastructure/Simple-Web-Server (MIT) | commit `546895a93a29062bb178367b46c7afb72da9881e` | Vendored, unmodified | `third-party/Simple-Web-Server/` |
-| libdisplaydevice (display enumeration) | https://github.com/LizardByte/libdisplaydevice (AGPL-3.0) | commit `fe7e6a81f65deae91594702e1a185f47229745b9` | Vendored, **modified** | `third-party/libdisplaydevice/` |
+| libdisplaydevice (display enumeration) | https://github.com/LizardByte/libdisplaydevice (MIT) | commit `fe7e6a81f65deae91594702e1a185f47229745b9` | Vendored, **modified** | `third-party/libdisplaydevice/` |
 | nv-codec-headers (NVENC API headers) | https://github.com/FFmpeg/nv-codec-headers (MIT) | commit `33a9ede8d9914299d9262539c576a15bd0a19621` | Vendored, unmodified | `third-party/nv-codec-headers/` |
 | nvapi (NVIDIA NVAPI headers, used by the vendored `nvprefs` code) | https://github.com/NVIDIA/nvapi (MIT) | commit `9b181ea572f680327fe01a14a0f1f41c78034104` | Vendored, unmodified | `third-party/nvapi/` |
 | glad (GL/EGL loader generator, Linux VAAPI) | https://github.com/Dav1dde/glad (MIT; Khronos spec headers Apache-2.0) | commit `73db193f853e2ee079bf3ca8a64aa2eaf6459043` | Vendored, unmodified | `third-party/glad/` |
@@ -104,6 +103,9 @@ comment):
    subdirectories (docs/tests only; not needed to build).
 2. Removed the top-level `tests/` directory and the stale `.gitmodules` /
    `.readthedocs.yaml` files (they referenced the removed nested submodules/docs).
+3. Updated the `LICENSE` and `scripts/pyproject.toml` to reflect the MIT
+   relicense (upstream commit `1cf4cbe299002a21133f02d564e74898d4d07b22`); the
+   pinned revision `fe7e6a81f65deae91594702e1a185f47229745b9` predates it.
 
 ### `third-party/libgamestream/`
 

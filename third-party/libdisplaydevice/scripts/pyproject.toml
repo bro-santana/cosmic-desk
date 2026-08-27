@@ -7,7 +7,7 @@ name = "libdisplaydevice"
 dynamic = ["version"]
 description = "Helper scripts for libdisplaydevice"
 requires-python = ">=3.14"
-license = {text = "AGPL-3.0-only"}
+license = {text = "MIT"}
 authors = [
     {name = "LizardByte", email = "lizardbyte@users.noreply.github.com"}
 ]

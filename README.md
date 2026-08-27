@@ -85,7 +85,7 @@ Modifications to vendored files are marked inline with `COSMIC MODIFICATION` com
 | [Dear ImGui](https://github.com/ocornut/imgui) | MIT | All user interface |
 | [tray](https://github.com/zserge/tray) | MIT | Tray icon and menu |
 | [Simple-Web-Server](https://github.com/LizardByte-infrastructure/Simple-Web-Server) | MIT | Header-only HTTP(S) server used by the vendored Sunshine host (`nvhttp`) |
-| [libdisplaydevice](https://github.com/LizardByte/libdisplaydevice) | AGPL-3.0 | Display enumeration for the host's monitor list |
+| [libdisplaydevice](https://github.com/LizardByte/libdisplaydevice) | MIT | Display enumeration for the host's monitor list |
 | [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers) | MIT | NVENC API headers for the host's NVENC encoder |
 | [nvapi](https://github.com/NVIDIA/nvapi) | MIT | NVIDIA NVAPI headers used by the vendored `nvprefs` code |
 | [glad](https://github.com/Dav1dde/glad) | MIT | GL/EGL loader generator used by the Linux VAAPI build |
@@ -93,9 +93,7 @@ Modifications to vendored files are marked inline with `COSMIC MODIFICATION` com
 | Sunshine DXGI HLSL capture shaders ([Sunshine](https://github.com/LizardByte/Sunshine)) | GPL-3.0 | Windows capture shaders in `assets/shaders/` |
 
 Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-3.0** —
-see [`LICENSE`](LICENSE). One vendored component, libdisplaydevice, is AGPL-3.0;
-combining it with the GPL-3.0 code makes the combined work subject to AGPL-3.0 terms.
-Cosmic Desk is not affiliated with or endorsed by the LizardByte or Moonlight projects.
+see [`LICENSE`](LICENSE).
 
 <p align="left">
   <img src="assets/cosmicdesk-logo-text.svg" alt="Cosmic Desk" width="960" />
