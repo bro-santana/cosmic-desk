@@ -18,9 +18,9 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="0.58902547"
-     inkscape:cx="30.55895"
-     inkscape:cy="180.80712"
+     inkscape:zoom="1.6660156"
+     inkscape:cx="213.68347"
+     inkscape:cy="176.76905"
      inkscape:window-width="1920"
      inkscape:window-height="1055"
      inkscape:window-x="-7"
@@ -65,7 +65,7 @@
     </linearGradient>
   </defs>
   <ellipse
-     style="display:inline;fill:#14172e;fill-opacity:1;stroke:#000000;stroke-width:1.25995"
+     style="display:inline;fill:#14172e;fill-opacity:1;stroke:none;stroke-width:1.25995"
      id="path9"
      cx="256"
      cy="256"
