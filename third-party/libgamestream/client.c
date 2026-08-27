@@ -283,11 +283,6 @@ static int load_serverinfo(PSERVER_DATA server, bool https) {
     goto cleanup;
 
   server->paired = pairedText != NULL && strcmp(pairedText, "1") == 0;
-  // COSMIC MODIFICATION: remember whether this PairStatus is trustworthy.
-  // Sunshine only ever reports PairStatus=1 on the HTTPS server (nvhttp.cpp
-  // serverinfo(): pair_status stays 0 for the plain-HTTP instantiation), so a
-  // false from the HTTP fallback carries no information.
-  server->pairedOverHttps = https;
   server->currentGame = currentGameText == NULL ? 0 : atoi(currentGameText);
   server->serverInfo.serverCodecModeSupport = serverCodecModeSupportText == NULL ? SCM_H264 : atoi(serverCodecModeSupportText);
   server->serverMajorVersion = atoi(server->serverInfo.serverInfoAppVersion);
@@ -342,6 +337,16 @@ static int load_server_status(PSERVER_DATA server) {
   ret = GS_INVALID;
   for (i = 0; i < 2 && ret != GS_OK; i++) {
     ret = load_serverinfo(server, i == 0);
+    if (i == 0 && ret != GS_OK) {
+      // COSMIC MODIFICATION: the HTTPS probe "fails" for an unpaired client too,
+      // but for a different reason: the host answers 401, which curl returns as
+      // a successful response body (401/407 slip past CURLOPT_FAILONERROR), so
+      // load_serverinfo() reports GS_ERROR from xml_status(). Only GS_IO_ERROR
+      // means the HTTPS listener never answered at the transport level. Record
+      // that so the caller can tell "unpaired, go ahead and pair" from "HTTPS
+      // port is down".
+      server->httpsReachable = (ret != GS_IO_ERROR);
+    }
   }
 
   if (ret == GS_OK && !server->unsupported) {

@@ -357,13 +357,13 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs,
         return;
     }
 
-    if (!server.paired && !server.pairedOverHttps) {
-        // PairStatus came from the plain-HTTP fallback, which Sunshine
-        // hardcodes to 0 (nvhttp.cpp serverinfo()), so it tells us nothing:
-        // the host's HTTPS listener simply did not answer. Pairing anyway
-        // would prompt for a PIN and then fail, because every remaining step
-        // (pairchallenge, applist, launch) is HTTPS too. Report the real
-        // problem instead of looping the user through a pointless re-pair.
+    if (!server.paired && !server.httpsReachable) {
+        // PairStatus came from the plain-HTTP fallback (Sunshine hardcodes it
+        // to 0), AND the HTTPS probe never reached the host's listener, so the
+        // HTTPS port is genuinely down/unreachable. Pairing anyway would prompt
+        // for a PIN and then fail, because the final pairchallenge step (and
+        // applist/launch) are HTTPS. A reachable-but-unpaired host leaves
+        // httpsReachable set, so a normal first-time pairing proceeds below.
         set_status(ViewerState::Failed,
                    "Host is not answering on HTTPS (port " +
                        std::to_string(http_port - 5) +
