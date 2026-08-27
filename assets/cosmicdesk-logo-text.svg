@@ -24,15 +24,15 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="1.6523969"
-     inkscape:cx="291.09229"
-     inkscape:cy="-18.458035"
+     inkscape:zoom="3.3047938"
+     inkscape:cx="97.131627"
+     inkscape:cy="102.72956"
      inkscape:window-width="1920"
      inkscape:window-height="1055"
      inkscape:window-x="-7"
      inkscape:window-y="-7"
      inkscape:window-maximized="1"
-     inkscape:current-layer="svg8" />
+     inkscape:current-layer="g8" />
   <defs
      id="defs4">
     <linearGradient
@@ -168,14 +168,14 @@
        gradientUnits="userSpaceOnUse" />
   </defs>
   <rect
-     x="0"
-     y="0"
-     width="567.55231"
-     height="154.06424"
-     rx="35.845406"
+     x="22.501743"
+     y="13.313993"
+     width="522.92096"
+     height="129.15862"
+     rx="33.026588"
      fill="#14172e"
      id="rect4"
-     style="display:inline;fill:#2b305e;fill-opacity:0.9116379;stroke-width:0.692376"
+     style="display:inline;fill:#2b305e;fill-opacity:0.911638;stroke-width:0.608511"
      inkscape:label="background" />
   <path
      style="fill:url(#linearGradient6);stroke:none;stroke-width:1.1;stroke-opacity:1"
@@ -199,7 +199,8 @@
        id="tspan8">Desk</tspan></text>
   <g
      id="g8"
-     transform="translate(0,-42.96788)">
+     transform="translate(0,-42.96788)"
+     inkscape:label="logo">
     <circle
        style="display:inline;fill:#14172e;fill-opacity:1;stroke:none;stroke-width:0.30668"
        id="path9"

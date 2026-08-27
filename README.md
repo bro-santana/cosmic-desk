@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="assets/cosmicdesk-logo-text.png" alt="Cosmic Desk" width="568" />
+  <img src="assets/cosmicdesk-logo-hero.svg" alt="Cosmic Desk" width="960" />
 </p>
 
 A minimal remote desktop tool built on the **Moonlight protocol** and based on the **Sunshine** project.
@@ -96,3 +96,7 @@ Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-
 see [`LICENSE`](LICENSE). One vendored component, libdisplaydevice, is AGPL-3.0;
 combining it with the GPL-3.0 code makes the combined work subject to AGPL-3.0 terms.
 Cosmic Desk is not affiliated with or endorsed by the LizardByte or Moonlight projects.
+
+<p align="left">
+  <img src="assets/cosmicdesk-logo-text.svg" alt="Cosmic Desk" width="960" />
+</p>
