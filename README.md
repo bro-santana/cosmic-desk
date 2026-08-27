@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="assets/cosmicdesk-logo-text.png" alt="Cosmic Desk" width="568" />
+  <img src="assets/cosmicdesk-logo-hero.png" alt="Cosmic Desk" width="960" />
 </p>
 
 A minimal remote desktop tool built on the **Moonlight protocol**.
