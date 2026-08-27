@@ -401,13 +401,14 @@ int main(int argc, char** argv) {
                     // Hiding to the tray mid-stream leaves the Viewing UI:
                     // release the grab, flush held input, restore the hints,
                     // and tear down the video renderer so the host does not
-                    // keep stuck keys. The session keeps running in the
-                    // background (close to tray = get out of the way).
+                    // keep stuck keys. The session is also ended so the host is
+                    // not left streaming with nothing shown.
                     if (mode == cosmic::AppMode::Viewing ||
                         g_session->status().state ==
                             cosmic::viewer::ViewerState::Streaming) {
                         leave_viewing_ui(window, &input_grabbed,
                                          &vrenderer_active);
+                        g_session->end_session();
                     }
                     mode = cosmic::AppMode::HiddenToTray;
                     SDL_HideWindow(window);
