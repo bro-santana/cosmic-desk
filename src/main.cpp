@@ -367,8 +367,28 @@ int main(int argc, char** argv) {
     }
 
     cosmic::Settings settings = cosmic::Settings::load();
-    if (!std::filesystem::exists(cosmic::Settings::config_file())) {
-        // Materialize defaults on first run so the file is there to be edited.
+    // The OS owns the autostart entry; cosmic.json only mirrors it so the
+    // settings toggle has a value to render. The two drift whenever the writer
+    // and the reader disagree about which config store they use: an elevated
+    // manual run writes the Run key under the user's hive but cosmic.json to
+    // ProgramData (PLAN.md D9), so the next unelevated start reads a file that
+    // never saw the write and shows the toggle off while the app does start at
+    // logon. The OS is the source of truth; correct the file to match.
+    //
+    // Skipped in service mode: cosmicsvc spawns us as SYSTEM, so HKCU is the
+    // SYSTEM profile's hive rather than the logged-on user's. Reading it would
+    // report an unrelated account's autostart and overwrite the user's stored
+    // value; the settings panel locks the toggle in this mode for the same
+    // reason.
+    bool autostart_drifted = false;
+    if (!service_mode) {
+        const bool os_autostart = cosmic::autostart::enabled();
+        autostart_drifted = settings.autostart != os_autostart;
+        settings.autostart = os_autostart;
+    }
+    if (autostart_drifted || !std::filesystem::exists(cosmic::Settings::config_file())) {
+        // Materialize defaults on first run so the file is there to be edited,
+        // and persist a corrected autostart so the drift is fixed once.
         settings.save();
     }
 
@@ -832,6 +852,7 @@ int main(int argc, char** argv) {
         bridge_input.fps = settings.fps;
         bridge_input.bitrate_kbps = settings.bitrate_kbps;
         bridge_input.autostart = settings.autostart;
+        bridge_input.service_mode = service_mode;
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
         bridge_input.time_s = static_cast<double>(SDL_GetTicks64()) / 1000.0;
         bridge_input.hosts = settings.hosts_snapshot();

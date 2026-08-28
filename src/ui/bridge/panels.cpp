@@ -453,34 +453,47 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
     y += slider_h + kSectionGap * scale;
 
     // --- AUTOSTART ---
+    // Locked in service mode: cosmicsvc already starts the host at boot, and
+    // the HKCU Run key autostart.cpp writes would land in the SYSTEM profile's
+    // hive (we run as SYSTEM there), never the logged-on user's. No hit test
+    // is registered so the row cannot emit SetAutostart at all.
+    const bool locked = in.service_mode;
+    const bool toggle_on = in.autostart && !locked;
     const float toggle_x = content_x;
     const float toggle_y = y + (toggle_row_h - kToggleH * scale) * 0.5f;
-    ImGui::SetCursorScreenPos(ImVec2(toggle_x, toggle_y));
-    ImGui::InvisibleButton("##autostart", ImVec2(kToggleW * scale, kToggleH * scale));
-    if (ImGui::IsItemClicked()) {
-        out_action->kind = BridgeAction::SetAutostart;
-        out_action->on = !in.autostart;
+    if (!locked) {
+        ImGui::SetCursorScreenPos(ImVec2(toggle_x, toggle_y));
+        ImGui::InvisibleButton("##autostart", ImVec2(kToggleW * scale, kToggleH * scale));
+        if (ImGui::IsItemClicked()) {
+            out_action->kind = BridgeAction::SetAutostart;
+            out_action->on = !in.autostart;
+        }
     }
     // Pill: kGreenBtn when on, kPanelInput when off; 14 px knob, rounded 12 px.
+    // Locked reads as off and inert: kPanelInput fill with a kMuted knob.
     ImDrawList* child_list = ImGui::GetWindowDrawList();
-    const ImU32 toggle_bg = in.autostart ? ImGui::GetColorU32(Rgba(kGreenBtn))
-                                         : ImGui::GetColorU32(Rgba(kPanelInput));
+    const ImU32 toggle_bg = toggle_on ? ImGui::GetColorU32(Rgba(kGreenBtn))
+                                      : ImGui::GetColorU32(Rgba(kPanelInput));
     child_list->AddRectFilled(ImVec2(toggle_x, toggle_y),
                               ImVec2(toggle_x + kToggleW * scale, toggle_y + kToggleH * scale),
                               toggle_bg, kToggleRadius * scale);
-    const float knob_cx = in.autostart ? toggle_x + (kToggleW - 10.0f) * scale
-                                       : toggle_x + 10.0f * scale;
+    const float knob_cx = toggle_on ? toggle_x + (kToggleW - 10.0f) * scale
+                                    : toggle_x + 10.0f * scale;
     child_list->AddCircleFilled(ImVec2(knob_cx, toggle_y + kToggleH * scale * 0.5f),
-                                kKnobR * scale, ImGui::GetColorU32(Rgba(kText)));
+                                kKnobR * scale,
+                                ImGui::GetColorU32(Rgba(locked ? kMuted : kText)));
 
-    // Copy, sans 12.5, kTextDim, vertically centered on the toggle.
+    // Copy, sans 12.5, kTextDim (kMuted when locked), vertically centered on
+    // the toggle. Both strings are one line at the 248 px copy column.
+    const char* copy = locked ? "Autostart - handled by the service"
+                              : "Autostart - launch to tray on login";
     ImGui::PushFont(cosmic::ui::FontSansRegular());
     ImGui::SetWindowFontScale(12.5f / 13.0f);
-    const ImVec2 copy_size = cosmic::ui::TextSpacedSize("Autostart - launch to tray on login", 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kTextDim));
+    const ImVec2 copy_size = cosmic::ui::TextSpacedSize(copy, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(locked ? kMuted : kTextDim));
     ImGui::SetCursorScreenPos(ImVec2(toggle_x + kToggleW * scale + 12.0f * scale,
                                      y + (toggle_row_h - copy_size.y) * 0.5f));
-    cosmic::ui::TextSpaced("Autostart - launch to tray on login", 0.0f);
+    cosmic::ui::TextSpaced(copy, 0.0f);
     ImGui::PopStyleColor();
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();

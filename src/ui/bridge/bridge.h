@@ -87,6 +87,11 @@ struct BridgeInput {
     int fps = 60;
     int bitrate_kbps = 20000;
     bool autostart = false;
+    // True when cosmicsvc spawned us (main.cpp --service). The service already
+    // starts the host at boot, and autostart.cpp's HKCU Run key would land in
+    // the SYSTEM profile's hive rather than the logged-on user's, so the
+    // Settings panel renders the autostart toggle locked in this mode.
+    bool service_mode = false;
     // Pairing feedback (U4), filled by main.cpp from the pair latch: drives
     // the in-scene PIN panel and the Pair modal's pairing state.
     bool pairing_active = false;
