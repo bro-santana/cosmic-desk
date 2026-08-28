@@ -3,7 +3,10 @@
 ; Inno Setup script (6 or 7) wrapping the standalone bundle produced by
 ; packaging/windows/make-zip.ps1. Per-user install by default (no admin/UAC,
 ; machine-wide is offered), Start Menu and optional desktop shortcuts,
-; uninstaller included.
+; uninstaller included. The shortcuts run cosmicdesk.exe --shortcut, which
+; starts the Cosmic Desk service when needed (plan M9). An optional service
+; task installs the Cosmic Desk service (plan M10), which streams UAC prompts,
+; the lock screen and the logon screen; the uninstaller removes it first.
 ;
 ; Usage (from the repo root, after configuring CMake and running make-zip.ps1):
 ;   ISCC.exe packaging\windows\installer.iss
@@ -50,10 +53,15 @@ Source: "..\..\dist\CosmicDesk\*"; DestDir: "{app}"; Flags: ignoreversion recurs
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
+Name: "service"; Description: "Install the Cosmic Desk service (recommended: lets you stream UAC prompts, the lock screen and the logon screen)"; GroupDescription: "Additional components:"; Flags: unchecked
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--shortcut"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--shortcut"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Tasks: service; StatusMsg: "Installing the Cosmic Desk service..."; Flags: runhidden
+
+[UninstallRun]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Flags: runhidden

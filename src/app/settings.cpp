@@ -8,6 +8,11 @@
 #include <fstream>
 #include <system_error>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <sddl.h>
+#endif
+
 namespace cosmic {
 namespace {
 
@@ -95,6 +100,44 @@ std::filesystem::path home_dir() {
     return std::filesystem::current_path();
 }
 
+#ifdef _WIN32
+// True when the process token is elevated (elevated admin) or LocalSystem.
+// Token elevation *type* alone is ambiguous for LocalSystem (it reports
+// TokenElevationTypeDefault like a standard user), so an explicit SYSTEM SID
+// check backs it up. Deliberately NOT a write probe: the first unelevated run
+// can create C:\ProgramData\CosmicDesk (Windows lets Users create subfolders
+// there) and become its creator-owner, which made a probe pass and wrongly
+// adopted the machine-wide location.
+bool is_elevated_or_system() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+    bool elevated = false;
+    TOKEN_ELEVATION_TYPE type {};
+    DWORD size = 0;
+    if (GetTokenInformation(token, TokenElevationType, &type, sizeof(type), &size) &&
+        type == TokenElevationTypeFull) {
+        elevated = true;
+    }
+    if (!elevated) {
+        BYTE buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+        DWORD needed = 0;
+        if (GetTokenInformation(token, TokenUser, buffer, sizeof(buffer), &needed)) {
+            auto* token_user = reinterpret_cast<TOKEN_USER*>(buffer);
+            BYTE system_sid[SECURITY_MAX_SID_SIZE];
+            DWORD sid_size = sizeof(system_sid);
+            if (CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid, &sid_size) &&
+                EqualSid(token_user->User.Sid, system_sid)) {
+                elevated = true;
+            }
+        }
+    }
+    CloseHandle(token);
+    return elevated;
+}
+#endif
+
 }  // namespace
 
 const char* to_string(ResolutionMode mode) {
@@ -103,6 +146,20 @@ const char* to_string(ResolutionMode mode) {
 
 std::filesystem::path Settings::config_dir() {
 #ifdef _WIN32
+    // Machine-wide location for elevated runs (the service spawns the app as
+    // SYSTEM, or a manual run-as-admin), per-user for portable unelevated
+    // runs. The decision is by token identity (see is_elevated_or_system
+    // above), not by write capability: a write probe is fooled by the
+    // creator-owner right an unelevated run gets when it is the first to
+    // create C:\ProgramData\CosmicDesk. Mirrors
+    // host/sunshine/src/platform/windows/misc.cpp appdata() — the two must
+    // agree so the UI and the host share one config store.
+    if (is_elevated_or_system()) {
+        if (const char* programdata = std::getenv("PROGRAMDATA")) {
+            return std::filesystem::path(programdata) / "CosmicDesk";
+        }
+        return std::filesystem::path("C:\\ProgramData") / "CosmicDesk";
+    }
     if (const char* appdata = std::getenv("APPDATA")) {
         return std::filesystem::path(appdata) / "CosmicDesk";
     }

@@ -5,6 +5,8 @@
 // threads (M1) and the viewer session (M2) plug into this loop later.
 
 #include "app/settings.h"
+#include "app/service_ctrl.h"
+#include "app/single_instance.h"
 #include "app/state.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
@@ -173,6 +175,16 @@ std::vector<cosmic::ui::MonitorInfo> to_monitor_info(
 
 int main(int argc, char** argv) {
     bool start_hidden = false;
+    // Set when cosmicsvc spawned us (plan M8.2): the service respawns us
+    // whenever we exit, so a tray Quit must exit with
+    // ERROR_SHUTDOWN_IN_PROGRESS (1115) to stop the service too.
+    bool service_mode = false;
+    // Set by the Start-Menu shortcut (plan M9): --shortcut signals the running
+    // instance to show its window (starting the service first if needed);
+    // --shortcut-admin is the elevated relaunch that starts the service and
+    // exits. Windows-only in purpose; the handler block below is #ifdef'd.
+    bool shortcut_launch = false;
+    bool shortcut_admin = false;
     // --connect <ip> starts a viewer session as soon as the app is up, without
     // going through the window. Exists for the two-machine interop matrix
     // (PLAN.md S9), which otherwise cannot be driven from a script.
@@ -181,9 +193,92 @@ int main(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--hidden") {
             start_hidden = true;
+        } else if (arg == "--service") {
+            service_mode = true;
+        } else if (arg == "--shortcut") {
+            shortcut_launch = true;
+        } else if (arg == "--shortcut-admin") {
+            shortcut_admin = true;
         } else if (arg == "--connect" && i + 1 < argc) {
             autoconnect_ip = argv[++i];
         }
+    }
+
+    // Start-Menu shortcut flow (plan M9; upstream config.cpp:1461-1500
+    // semantics, implemented here because our UI is the app). Runs before the
+    // single-instance acquire: a shortcut must work while an instance is
+    // already running -- it only signals that instance to show its window.
+#ifdef _WIN32
+    if (shortcut_admin) {
+        // Elevated relaunch from --shortcut: start the service and exit; never
+        // run the real app (upstream returns 1 for the same reason).
+        cosmic::service_ctrl::start_service();
+        return 1;
+    }
+    if (shortcut_launch) {
+        // Cheap load for port_base; the real Settings object is created later.
+        cosmic::Settings settings = cosmic::Settings::load();
+        if (!cosmic::service_ctrl::is_service_running()) {
+            // Relaunch ourselves elevated to start the service: one UAC prompt,
+            // then the elevated process starts the service and exits.
+            wchar_t executable[MAX_PATH];
+            if (GetModuleFileNameW(nullptr, executable, MAX_PATH) == 0) {
+                std::fprintf(stderr, "--shortcut: GetModuleFileNameW failed (%lu)\n",
+                             GetLastError());
+                return 1;
+            }
+            SHELLEXECUTEINFOW shell_exec_info{};
+            shell_exec_info.cbSize = sizeof(shell_exec_info);
+            shell_exec_info.fMask =
+                SEE_MASK_NOASYNC | SEE_MASK_NO_CONSOLE | SEE_MASK_NOCLOSEPROCESS;
+            shell_exec_info.lpVerb = L"runas";
+            shell_exec_info.lpFile = executable;
+            shell_exec_info.lpParameters = L"--shortcut-admin";
+            shell_exec_info.nShow = SW_NORMAL;
+            if (!ShellExecuteExW(&shell_exec_info)) {
+                std::fprintf(stderr, "--shortcut: ShellExecuteExW failed (%lu)\n",
+                             GetLastError());
+                return 1;
+            }
+            // Wait for the elevated process to finish starting the service.
+            WaitForSingleObject(shell_exec_info.hProcess, INFINITE);
+            CloseHandle(shell_exec_info.hProcess);
+        }
+        if (!cosmic::service_ctrl::is_service_running()) {
+            // The service is not installed (portable install): do not stall
+            // for 30 s waiting for a UI that will never come.
+            MessageBoxW(nullptr,
+                        L"Could not start the Cosmic Desk service. Install it with "
+                        L"packaging\\windows\\install-service.ps1 or reinstall Cosmic Desk.",
+                        L"Cosmic Desk", MB_ICONWARNING | MB_OK);
+            return 1;
+        }
+        // The service-spawned instance is starting; wait for its host port.
+        // The shortcut reads port_base from the USER profile while the
+        // service-spawned host reads the SYSTEM profile (PLAN.md D9), so the
+        // configured port can diverge; 47989 is the default the host uses.
+        // The readiness result still does not block the show-window signal.
+        if (!cosmic::service_ctrl::wait_for_ui_ready(settings.port_base)) {
+            cosmic::service_ctrl::wait_for_ui_ready(47989);
+        }
+        // Signal the running instance to show its window (plan M8.1). The
+        // event may not exist yet (startup race), in which case there is
+        // nothing to signal.
+        HANDLE event =
+            OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\CosmicDesk.ShowWindow");
+        if (event != nullptr) {
+            SetEvent(event);
+            CloseHandle(event);
+        }
+        return 0;
+    }
+#endif
+
+    // Single-instance guard (plan M8.1): a second launch must not create a
+    // second process (the host ports would clash). The running instance shows
+    // its window; we exit.
+    if (!cosmic::single_instance::acquire()) {
+        return 0;
     }
 
     // Run from the executable's directory so the vendored host's CWD-relative
@@ -273,6 +368,11 @@ int main(int argc, char** argv) {
 
     cosmic::AppMode mode = start_hidden ? cosmic::AppMode::HiddenToTray : cosmic::AppMode::MainWindow;
     bool running = true;
+    // Set when the tray Quit item is clicked, so main() can tell a tray quit
+    // apart from other exits (plan M8.2: in service mode a tray quit must exit
+    // with ERROR_SHUTDOWN_IN_PROGRESS so cosmicsvc stops instead of respawning
+    // us).
+    bool tray_quit_requested = false;
 
     const bool has_tray = cosmic::ui::tray_start(
         asset_path(tray_icon_name()),
@@ -282,7 +382,10 @@ int main(int argc, char** argv) {
                 SDL_ShowWindow(window);
                 SDL_RaiseWindow(window);
             },
-            [&] { running = false; },
+            [&] {
+                tray_quit_requested = true;
+                running = false;
+            },
         });
 
     if (!has_tray) {
@@ -434,6 +537,13 @@ int main(int argc, char** argv) {
 
         if (has_tray && !cosmic::ui::tray_pump()) {
             running = false;
+        }
+        // A second launch signaled us to show the window (plan M8.1): leave
+        // the tray and raise the window, same as the tray Show item.
+        if (cosmic::single_instance::poll_show_request()) {
+            mode = cosmic::AppMode::MainWindow;
+            SDL_ShowWindow(window);
+            SDL_RaiseWindow(window);
         }
         if (!running) {
             break;
@@ -784,6 +894,16 @@ int main(int argc, char** argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     cosmic::hostglue::stop();
+    cosmic::single_instance::release();
     SDL_Quit();
+
+#ifdef _WIN32
+    // Quitting from the tray while service-spawned: exit 1115 so cosmicsvc stops
+    // instead of respawning us (PLAN.md M8.2; upstream pattern in Sunshine's
+    // system_tray.cpp tray_quit_cb). Upstream detects service mode via
+    // GetConsoleWindow()==nullptr, but our GUI build never has a console, so the
+    // explicit --service flag is the equivalent.
+    if (tray_quit_requested && service_mode) { return ERROR_SHUTDOWN_IN_PROGRESS; }
+#endif
     return 0;
 }

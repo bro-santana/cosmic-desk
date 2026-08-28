@@ -24,6 +24,7 @@ extern "C" {
 
 #ifdef _WIN32
   #include <windows.h>
+  #include <shlobj.h>
 #endif
 
 #include <clocale>
@@ -139,6 +140,55 @@ bool write_host_conf(const Settings &settings) {
 
 }  // namespace
 
+// One-time migration to the machine-wide config location (Windows only).
+// Before the ProgramData change, elevated runs stored everything under
+// %APPDATA%\CosmicDesk of whoever ran the app (for the service that is
+// C:\Windows\System32\config\systemprofile\AppData\Roaming\CosmicDesk). If
+// the new location has no config yet and the legacy one does, copy the whole
+// folder over so pairing and settings survive the upgrade. Called before
+// anything writes to platf::appdata().
+#ifdef _WIN32
+void migrate_legacy_appdata() {
+  const auto new_dir = platf::appdata();
+
+  PWSTR roaming = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DONT_VERIFY,
+                                  nullptr, &roaming))) {
+    return;
+  }
+  std::filesystem::path legacy {roaming};
+  CoTaskMemFree(roaming);
+  legacy = legacy / L"CosmicDesk";
+
+  std::error_code ec;
+  if (legacy == new_dir || !std::filesystem::exists(legacy, ec)) {
+    return;
+  }
+  if (std::filesystem::exists(new_dir / "host.conf", ec) ||
+      std::filesystem::exists(new_dir / "cosmic.json", ec)) {
+    return;
+  }
+
+  std::filesystem::create_directories(new_dir, ec);
+  if (ec) {
+    return;
+  }
+  std::filesystem::directory_iterator it(legacy, ec);
+  if (ec) {
+    return;
+  }
+  for (auto &entry : it) {
+    ec.clear();
+    std::filesystem::copy(entry.path(), new_dir / entry.path().filename(),
+                          std::filesystem::copy_options::recursive, ec);
+    if (ec) {
+      BOOST_LOG(warning) << "Failed to migrate " << entry.path();
+    }
+  }
+  BOOST_LOG(info) << "Migrated config from " << legacy << " to " << new_dir;
+}
+#endif
+
 int paired_client_count() {
   // Sunshine's state file format (host/sunshine/src/nvhttp.cpp save_state/
   // load_state): root.named_devices is an array of paired client certs. Read it
@@ -185,6 +235,12 @@ bool start(const Settings &settings) {
 #endif
   // Use UTF-8 conversion for the default C++ locale (used by boost::log)
   std::locale::global(std::locale(std::locale(), new std::codecvt_utf8<wchar_t>));
+
+#ifdef _WIN32
+  // Bring config/state from the legacy per-profile location over to the
+  // machine-wide one (ProgramData) before anything touches appdata().
+  migrate_legacy_appdata();
+#endif
 
   if (!write_host_conf(settings)) {
     return false;

@@ -40,6 +40,8 @@ known-good side.
 - [ ] Host accepts pairing via native PIN dialog, Moonlight PIN flow (M1); pair once →
       later connections free
 - [ ] Autostart with the PC + tray icon (M0 tray, M6 autostart)
+- [ ] Windows service mode: host streams through UAC prompts, the lock screen and
+      the logon screen without freezing (M7–M10)
 - [ ] Viewer: fullscreen/windowed toggle (M4)
 - [ ] Viewer top bar: monitor selector with seamless mid-stream switch + exit (M4/M5)
 - [ ] Capture all input incl. Alt+Tab when focused (M4)
@@ -85,12 +87,37 @@ viewer network/decode already live on worker threads in the upstream code.
                  ◀─control/input ENet─▶ Host :47999 (encrypted input both ways)
 ```
 
-**Windows "service" reality (documented in README):** a real Windows Service runs in
-session 0 and cannot capture the interactive desktop or inject input. The realistic
-service is an autostart-at-login tray app (`HKCU\...\Run`). Consequences: host is
-unreachable before login; UAC secure-desktop prompts are invisible. Sunshine solves
-this with an elevated service+helper architecture — out of scope for v1; README
-documents it and offers a Task Scheduler "run elevated" workaround note.
+**Windows service architecture (M7–M10).** An unelevated host process cannot
+capture the UAC secure desktop: UIPI blocks input injection into elevated surfaces
+and DXGI duplication stops producing frames — exactly the "frozen on UAC prompt"
+failure. Sunshine fixes it by running the app **as SYSTEM inside the interactive
+console session**; Cosmic Desk mirrors the architecture:
+
+```
+ ┌─ cosmicsvc.exe — Windows Service (LocalSystem, session 0) ─────────────────┐
+ │  Every 3 s: WTSGetActiveConsoleSessionId() → duplicate the SYSTEM token →  │
+ │  SetTokenInformation(TokenSessionId) → CreateProcessAsUserW(               │
+ │  "cosmicdesk.exe --hidden --service") on winsta0\default inside a Job      │
+ │  object (KILL_ON_JOB_CLOSE). Fast user switch (WTS_CONSOLE_CONNECT)        │
+  │  restarts the app in the new session. STOP/PRESHUTDOWN → TerminateProcess │
+  │  (the GUI child cannot receive console signals, so the upstream Ctrl-C     │
+  │  helper is dropped — it made every stop stall 20 s); the graceful path is  │
+  │  the tray-Quit 1115 handshake (M8): exit 1115 stops the service, no respawn│
+ └────────────────────────────────────────────────────────────────────────────┘
+                               │ spawns as SYSTEM in the console session
+                               ▼
+ ┌─ cosmicdesk.exe — the unchanged one-process app (UI + host + viewer) ──────┐
+ │  Elevated: captures UAC secure desktop + lock screen (no freeze), injects  │
+ │  input into elevated windows, host reachable at the logon screen; tray     │
+ │  works (upstream precedent; known first-boot icon quirk).                  │
+ └────────────────────────────────────────────────────────────────────────────┘
+```
+
+Consequences (D7–D9): config/credentials live in `%ProgramData%\CosmicDesk` when
+service-launched (see D9); a single-instance guard prevents double launches; the
+UI runs as SYSTEM (bounded risk: no file/command UI surface). Linux is
+untouched — the UAC problem is Windows-only, and M6 autostart remains the Linux
+story.
 
 ### 3.2 Ports (all derived from one `port_base` setting, default 47989)
 
@@ -186,8 +213,40 @@ budgeted there. Escape hatch: restore LizardByte's prebuilt FFmpeg for the host 
   port_base, autostart flag — via nlohmann-json),
   `host.conf` (generated key=value consumed by Sunshine's `config.cpp`),
   `credentials/` (host TLS cert+key), `client/` (viewer cert+key from `mkcert.c`,
-  paired server certs), host-side paired-clients state (Sunshine's existing format,
-  relocated).
+   paired server certs), host-side paired-clients state (Sunshine's existing format,
+   relocated).
+
+### D7. Windows service model = Sunshine's launcher pattern (M7–M10)
+
+One tiny LocalSystem service (`cosmicsvc.exe`, adapted from upstream
+`tools/sunshinesvc.cpp`) whose only job is to spawn the existing app as SYSTEM in the
+active console session and babysit it (spawn at boot, respawn on crash, restart on
+session change, graceful stop handshake). UAC is a Windows problem, so **Linux is
+unchanged**; the M6 autostart (Run key / XDG) stays as the portable/no-service mode.
+
+### D8. Launch hygiene: single instance + `--hidden --service` spawn
+
+Upstream avoids double instances because its `--shortcut` path never runs the real
+app; our UI *is* the app, so we add a session-local named mutex
+(`Local\CosmicDesk.SingleInstance`): a second launch signals
+`Local\CosmicDesk.ShowWindow` (the running instance raises its window) and exits.
+The service spawns with `--hidden --service` — tray-only at boot, UI on demand.
+Tray Quit exits with `ERROR_SHUTDOWN_IN_PROGRESS` (1115) so the service stops too;
+upstream detects "under service" via `GetConsoleWindow() == nullptr`
+(`system_tray.cpp:229-241`), but our GUI build never has a console, hence the
+explicit `--service` flag.
+
+### D9. Config location: machine-wide for elevated runs, per-user otherwise
+
+`platf::appdata()` (`host/sunshine/src/platform/windows/misc.cpp:141`) and
+`Settings::config_dir()` (`src/app/settings.cpp`) agree on one rule: elevated
+processes (the service-spawned SYSTEM instance, or a manual run-as-admin) use
+`C:\ProgramData\CosmicDesk`; unelevated portable runs use
+`%APPDATA%\CosmicDesk`. Writing next to the executable was rejected: make-zip
+wipes and recreates the dist folder on every bundle rebuild and machine-wide
+installs live under Program Files. On first elevated start the legacy
+per-profile folder (e.g. the SYSTEM profile's Roaming\CosmicDesk) is copied
+over once (hostglue `migrate_legacy_appdata`). README documents the location.
 
 ## 5. Repository layout
 
@@ -200,6 +259,8 @@ cosmic-desk/
 │   ├── app/
 │   │   ├── settings.{h,cpp}       # cosmic.json load/save, per-OS config paths
 │   │   ├── state.{h,cpp}          # AppMode enum + transitions
+│   │   ├── single_instance.{h,cpp} # one-instance mutex + show-window event (Win)
+│   │   ├── service_ctrl.{h,cpp}   # SCM helpers + port-listen readiness poll (Win)
 │   │   └── autostart.{h,cpp}      # HKCU Run key (Win) / XDG autostart .desktop (Linux)
 │   ├── ui/
 │   │   ├── host_list.cpp          # managed host list: pair/connect/nickname/remove
@@ -221,6 +282,9 @@ cosmic-desk/
 ├── host/
 │   └── sunshine/                  # VENDORED stripped Sunshine src/ (upstream file names kept)
 │       └── src/ + src/platform/{windows,linux}/
+├── tools/                         # Windows-only (guarded by if(WIN32) in CMake)
+│   ├── CMakeLists.txt             # cosmicsvc target, links wtsapi32 only
+│   └── cosmicsvc.cpp              # service launcher; adapted from Sunshine tools/sunshinesvc.cpp
 ├── third-party/
 │   ├── moonlight-common-c/        # git submodule (recursive: bundled patched enet/, nanors)
 │   ├── imgui/                     # vendored core + imgui_impl_sdl2 + imgui_impl_sdlrenderer2
@@ -229,7 +293,7 @@ cosmic-desk/
 │   ├── libgamestream/             # vendored from moonlight-embedded: client.c http.c mkcert.c xml.c
 │   └── inputtino/                 # git submodule (Linux only)
 ├── packaging/
-│   ├── windows/                   # make-zip.ps1 (ntldd DLL bundling); Inno Setup optional
+│   ├── windows/                   # make-zip.ps1 (ntldd DLL bundling); Inno Setup optional; install/uninstall-service.ps1
 │   └── linux/                     # .desktop files, systemd user unit, 60-cosmicdesk-input.rules
 ├── docs/
 │   ├── BUILDING.md                # exact commands from §6, kept current
@@ -346,8 +410,11 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | moonlight-qt `keyboard.cpp` VK table | `src/viewer/keymap.cpp` | lift wholesale + escape-combo pattern |
 | moonlight-qt `session.cpp`/`input/input.cpp` | *pattern* → `src/viewer/input.cpp` | SDL_SetWindowKeyboardGrab, NO_CLOSE_ON_ALT_F4 hint, relative mouse, FULLSCREEN_DESKTOP |
 | Dear ImGui core + sdl2/sdlrenderer2 backends | `third-party/imgui/` | vendored |
+| Sunshine `tools/sunshinesvc.cpp` | `tools/cosmicsvc.cpp` | service launcher; names/args/log changed, log rotation inlined (no Boost) |
+| Sunshine `src/entry_handler.cpp` (`service_ctrl::*`) | `src/app/service_ctrl.{h,cpp}` | SCM helpers + GetTcpTable readiness poll on `port_base` |
+| Sunshine `src/system_tray.cpp` `tray_quit_cb` | `src/main.cpp` tray Quit path | exit-code-1115 handshake; explicit `--service` flag replaces the console heuristic |
 
-## 8. Milestones (one inexperienced dev, part-guided; total ≈ 8–11 weeks)
+## 8. Milestones (one inexperienced dev, part-guided; total ≈ 11–14 weeks)
 
 ### M0 — Scaffold, toolchains, hello-window + tray (3–5 days)
 **Goal:** both OS toolchains proven; SDL+ImGui window and tray icon from our CMake.
@@ -457,7 +524,8 @@ uninterrupted; 10× switch loop survives; no stuck modifiers on host (type to co
 1. `autostart.cpp`: Win — `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\
    CosmicDesk = "<exe> --hidden"`; Linux — `~/.config/autostart/cosmicdesk.desktop`
    (`Exec=cosmicdesk --hidden`). `--hidden` starts to tray. Optional systemd user unit
-   documented as alternative.
+   documented as alternative. Kept as the portable/no-service mode once M7–M10 add
+   the Windows service (the recommended path on Windows).
 2. Windows packaging: `make-zip.ps1` bundling exe + MinGW DLLs (`ntldd -R`);
    Inno Setup installer (`installer.iss`) for the per-user setup exe.
 3. Linux packaging: install target, .desktop files, udev rule + instructions;
@@ -475,6 +543,124 @@ uninterrupted; 10× switch loop survives; no stuck modifiers on host (type to co
 autostart on → reboot → tray present → another machine pairs and connects. Fresh
 Ubuntu 24.04: someone other than the developer follows README alone (or installs the
 deb) → same result. README provenance table covers every row of §7.
+
+### M7 — Windows service launcher `cosmicsvc.exe` (3–5 days)
+**Goal:** a LocalSystem service that spawns the existing app as SYSTEM in the active
+console session — Sunshine's `tools/sunshinesvc.cpp` adapted (new §7 row).
+1. `tools/cosmicsvc.cpp`: keep the upstream mechanism line-for-line — 3 s loop over
+   `WTSGetActiveConsoleSessionId()`, duplicate the SYSTEM token +
+   `SetTokenInformation(TokenSessionId)`, job object per child
+   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK`),
+   `CreateProcessAsUserW` on `winsta0\default`, `SERVICE_CONTROL_SESSIONCHANGE` /
+   `WTS_CONSOLE_CONNECT` restart. The upstream STOP/PRESHUTDOWN Ctrl-C helper
+   (`--terminate`, AttachConsole + GenerateConsoleCtrlEvent) is dropped:
+   cosmicdesk.exe is a GUI app, the CTRL_C event does nothing, and every stop
+   stalled in STOP_PENDING for the full 20 s grace before the force-kill — so
+   STOP now `TerminateProcess`es the child directly. The graceful path is the
+   tray-Quit 1115 handshake (M8): child exit code
+   `ERROR_SHUTDOWN_IN_PROGRESS` (1115) → `SetEvent(stop_event)`. Keep the log
+   handle inheritance. Changes only: `SERVICE_NAME =
+   "CosmicDeskService"`; child = `cosmicdesk.exe` with a mutable
+   `L"cosmicdesk.exe --hidden --service"` command line; log = `%TEMP%\cosmicsvc.log`;
+   keep the MinGW `PROC_THREAD_ATTRIBUTE_JOB_LIST` define; replace
+   `logging::rotate_log_file` with an inline helper (`MoveFileExW` old →
+   `cosmicsvc.log.1`, `MOVEFILE_REPLACE_EXISTING`) so the tool has no Boost/logging
+   dependency.
+2. `tools/CMakeLists.txt` (target `cosmicsvc`, links `wtsapi32` only; MinGW runtime
+   static via `-static` — the SCM has no MSYS2 PATH, so dynamic runtime DLLs would
+   kill the service at startup with error 1053) + top-level
+   CMakeLists: `add_subdirectory(tools)` behind `if(WIN32)`. The service sets its CWD
+   by stripping 2 path components (upstream main): `cosmicsvc.exe` must therefore sit
+   in a `tools\` subdir next to `cosmicdesk.exe` — `build\tools\` → `build\` and
+   `dist\CosmicDesk\tools\` → `dist\CosmicDesk\`. Comment this contract at both the
+   CMakeLists and the packaging script (M10.2 obeys it).
+3. `packaging/windows/install-service.ps1` + `uninstall-service.ps1` (ASCII, style of
+   make-zip.ps1): self-elevate via `Start-Process -Verb RunAs` when not admin;
+   `-ServiceExe` param defaulting to `dist\CosmicDesk\tools\cosmicsvc.exe` (the
+   self-contained bundle — on a dev tree run make-zip.ps1 first), then
+   `build\tools\cosmicsvc.exe` with a warning (the dev tree has no DLLs next to
+   cosmicdesk.exe, so the SCM cannot spawn it); `sc.exe create CosmicDeskService binPath=
+   "<path>" start= auto`, `sc.exe failure ... actions= restart/60000` ×3,
+   `sc.exe description ...`, `sc.exe start`, poll Get-Service until RUNNING (30 s);
+   uninstall: stop (30 s timeout) + delete, friendly no-op when already absent.
+
+**Accept:** `install-service.ps1` (one UAC prompt) → service RUNNING; Task Manager
+shows `cosmicdesk.exe` running as SYSTEM; `netstat -ano | findstr 47989` has a
+listener; `%TEMP%\cosmicsvc.log` holds the app's stdout; log out/in restarts the app
+in the new session; `sc stop CosmicDeskService` ends the app cleanly; killing the app
+→ respawn within ~3 s.
+
+### M8 — App/service handshake: single instance + stop-together (2–3 days)
+**Goal:** exactly one app per console session; tray Quit stops the service instead of
+being respawned.
+1. `src/app/single_instance.{h,cpp}`: `Local\CosmicDesk.SingleInstance` named mutex;
+   `acquire()` fails on `ERROR_ALREADY_EXISTS` (signal the auto-reset event
+   `Local\CosmicDesk.ShowWindow`, return false); `poll_show_request()` =
+   non-blocking `WaitForSingleObject(0)` + `ResetEvent`; `release()`. Non-Windows:
+   compile-safe no-ops with a comment (Linux follow-up).
+2. `src/main.cpp`: parse a new `--service` flag (set by cosmicsvc → `service_mode`).
+   After arg parsing, `acquire()`; false → return 0 (the running instance shows its
+   window). In the main loop (next to `tray_pump()`): `poll_show_request()` → mode =
+   MainWindow, show + raise. Track `tray_quit_requested` in the tray Quit callback;
+   `main()` returns `ERROR_SHUTDOWN_IN_PROGRESS` (1115) when quitting from the tray
+   while `service_mode`, else 0. (Upstream detects service mode with
+   `GetConsoleWindow() == nullptr` — `system_tray.cpp:229-241` — but our GUI build
+   has no console ever, so the explicit flag is the equivalent; comment this.)
+3. M6 autostart (Run key) stays as the portable/no-service fallback.
+
+**Accept:** service installed: tray Quit → app exits AND the service becomes STOPPED
+(no respawn); double-clicking `cosmicdesk.exe` while the service-spawned instance is
+up → no second process, the running window appears; kill the app in Task Manager →
+respawn in ~3 s; portable run (service stopped) unaffected.
+
+### M9 — `service_ctrl` + the `--shortcut` launch flow (2–3 days)
+**Goal:** the Start-Menu path starts the service when needed and never forks a second
+app (upstream `config.cpp:1461-1500` semantics, implemented in our `main()`).
+1. `src/app/service_ctrl.{h,cpp}`: port upstream `entry_handler.cpp:123-287` —
+   `is_service_running()` (OpenSCManagerA/OpenServiceA/QueryServiceStatus),
+   `start_service()` (StartServiceA + poll until not START_PENDING),
+   `wait_for_ui_ready()` (30 × 1 s `GetTcpTable` poll for `settings.port_base` in
+   `MIB_TCP_STATE_LISTEN`). Service name `CosmicDeskService`; no Boost — log via
+   `std::cout`/`fprintf(stderr)` like the rest of `src/`.
+2. `src/main.cpp`: handle `--shortcut-admin` / `--shortcut` before SDL init and
+   before the single-instance acquire (a shortcut must work while an instance is
+   running): `--shortcut-admin` → `start_service()`, exit 1; `--shortcut` → if the
+   service is not running, `ShellExecuteExW` (`SEE_MASK_NOASYNC |
+   SEE_MASK_NO_CONSOLE | SEE_MASK_NOCLOSEPROCESS`, verb `runas`, self,
+   `--shortcut-admin`), wait on the process handle, `wait_for_ui_ready()`, signal
+   `Local\CosmicDesk.ShowWindow`, exit 0.
+3. `installer.iss` + README: Start-Menu shortcut runs `cosmicdesk.exe --shortcut`.
+4. The `service_ctrl::*` stubs in `host/sunshine/src/entry_handler_shim.h` stay
+   no-ops — hostglue calls `config::parse` with synthetic `argc=1`, so the vendored
+   `--shortcut` branch in `config.cpp` can never run; add that as a comment.
+
+**Accept:** fresh machine, service installed but stopped → Start-Menu shortcut → one
+UAC prompt → service RUNNING → the service-spawned instance's window appears; no
+second `cosmicdesk.exe` process; `netstat` shows the port; clicking the shortcut
+again only raises the window.
+
+### M10 — Installer integration, secure-desktop verification, docs (3–4 days)
+**Goal:** one-click install with the service; the UAC freeze is demonstrably gone.
+1. `installer.iss`: task "Install the Cosmic Desk service (recommended)" running
+   `install-service.ps1` after install (the script self-elevates, so
+   `PrivilegesRequired=lowest` is kept); `[UninstallRun]` runs
+   `uninstall-service.ps1` before file removal.
+2. `make-zip.ps1`: bundle `tools\cosmicsvc.exe` (→ `dist\CosmicDesk\tools\`) and
+   both service scripts.
+3. CI: the Windows job also builds the `cosmicsvc` target (compile check).
+4. `docs/VENDOR.md`: add the three new §7 rows. `README.md`: replace the
+   "session-0/UAC limitation" section — service mode streams UAC prompts, the lock
+   screen and the logon screen; remaining limits (fast user switch restarts the
+   session; config lives in `%ProgramData%\CosmicDesk` (D9); portable mode keeps the old limitation;
+   Linux unchanged).
+5. Run the §9.7 secure-desktop matrix on a two-machine rig.
+
+**Accept:** fresh Windows machine: machine-wide install with the service task →
+reboot → pair from a second machine → trigger a UAC prompt on the host mid-session:
+the viewer sees it and can click it (no freeze); Win+L → the viewer sees the lock
+screen and can unlock; reboot → connect before login → the logon screen streams;
+tray Quit stops the service; uninstall removes the service and all files; the
+portable zip still matches the old documented limitation; Linux builds unchanged.
 
 ## 9. Verification strategy
 
@@ -495,6 +681,11 @@ deb) → same result. README provenance table covers every row of §7.
    host physically to detect stuck modifiers.
 6. **CI:** build-only GitHub Actions job (MSYS2 + Ubuntu) from M0; no unit-test CI in
    v1 (nothing here unit-tests well without hardware).
+7. **Secure-desktop/service matrix (M10, every Windows release):** service mode
+   installed → connect → trigger a UAC prompt on the host (viewer sees it and can
+   click it); Win+L lock/unlock from the viewer; reboot → connect at the logon
+   screen before anyone logs in; portable mode (service stopped) reproduces the old
+   freeze — the documented difference.
 
 ## 10. Risk register
 
@@ -509,5 +700,9 @@ deb) → same result. README provenance table covers every row of §7.
 | R7 | Monitor-switch reinit races | Med | Med | Reuse Sunshine's shipped path unmodified; test via physical hotkey first (M5.4); 10× loop in acceptance |
 | R8 | Port clash with installed Sunshine/Moonlight on dev machines | High | Low | `port_base` setting since M1; in M1 acceptance + README |
 | R9 | Single process: viewer bug kills host role | Low | Low | Accepted for v1 (D2); teardown exercised by §9.4; post-v1: `--view <ip>` child process |
-| R10 | UAC secure desktop / lock screen invisible | Certain | Med | Documented limitation (README); Task Scheduler elevated-run workaround documented; fix = service architecture, explicitly out of scope |
+| R10 | UAC secure desktop / lock screen invisible | Certain | Med | **Resolved by M7–M10 service architecture** (app runs as SYSTEM in the console session). Residual only in portable (no-service) mode, documented in README |
 | R11 | Novice drowns in Sunshine's 90 KB files while debugging | Med | Med | Vendored code is a black box; debug at seams (hostglue, callbacks) with logging; stock-app oracles localize bugs first |
+| R12 | App UI runs as SYSTEM in service mode | Med | Med | UI has no file pickers, command boxes or web surface; README security note; D8/D9 |
+| R13 | App crash → service respawn loop | Low | Low | Job-object kill-on-close prevents orphans; `sc failure` restart delay (60 s); rotated svc log stays bounded |
+| R14 | Fast user switching restarts the session mid-stream | Med | Low | Upstream behavior (WTS_CONSOLE_CONNECT); documented in README |
+| R15 | ProgramData vs user-profile config stores (mixing service and manual runs) | Med | Med | Single-instance guard (D8); `--shortcut` is the only supported launch with the service installed; one-time migration (D9); README documents the location |

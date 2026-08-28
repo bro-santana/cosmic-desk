@@ -67,8 +67,9 @@ ninja -C build
 ```
 
 To produce a self-contained zip (no MSYS2 needed on the target machine), run the
-bundling script from the repo root in the **UCRT64** shell — it needs `ntldd`
-installed for DLL discovery:
+bundling script from the repo root in the **UCRT64** shell. It discovers DLLs
+with `ntldd` when available and falls back to a built-in list otherwise; either
+way it fails loudly if the bundle is missing load-critical DLLs:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File packaging\windows\make-zip.ps1
@@ -76,6 +77,26 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\make-zip.ps1
 
 The script is `packaging/windows/make-zip.ps1`; it produces
 `dist\CosmicDesk-windows-x64.zip` (exe + assets + MinGW DLLs + LICENSE + README).
+
+### Running the Windows service
+
+To stream UAC prompts, the lock screen and the logon screen, run the app as a
+service (PLAN.md M7–M10). On a dev tree, produce the bundle first (the step
+above) — the service spawns `cosmicdesk.exe` with no MSYS2 PATH, so it needs
+the DLLs the bundle places next to it. Then, from the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\windows\install-service.ps1
+```
+
+`install-service.ps1` self-elevates through one UAC prompt. It prefers the
+packaged bundle (`dist\CosmicDesk\tools\cosmicsvc.exe`) and warns when it falls
+back to the dev build; pass `-ServiceExe <path>` to force a specific binary.
+`uninstall-service.ps1` removes the service. The installer (above) offers the
+same service as an optional task. To update an installed service after a
+rebuild: stop it first (`sc.exe stop CosmicDeskService` — it locks
+`dist\CosmicDesk\tools\cosmicsvc.exe` while running), re-run `make-zip.ps1`,
+then start it again (`sc.exe start CosmicDeskService`).
 
 To produce an Inno Setup installer from that bundle (requires Inno Setup 6 or 7,
 `ISCC.exe` on PATH), run from the repo root:
@@ -233,6 +254,8 @@ Two consequences worth knowing:
 | `Could not find a package configuration file provided by "SDL2"` | Dependencies not installed, or you are in the wrong MSYS2 shell | Use the **UCRT64** shell; re-run the `pacman -S` line |
 | `cmake: command not found` in MSYS2 | You installed `cmake` instead of `mingw-w64-ucrt-x86_64-cmake`, or you are in the MSYS shell | Install the ucrt64 package and use the UCRT64 shell |
 | Build succeeds but the app fails to start with a missing DLL | Running the exe outside the MSYS2 environment | Run from the UCRT64 shell, or bundle DLLs (see `packaging/windows/`, milestone M6) |
+| A *bundled* exe fails at startup with a missing-DLL dialog (e.g. `avcodec-62.dll`) | The bundle was made on a machine with an incomplete MSYS2 install | Reinstall the section-3 packages (without `--needed` to restore deleted files), re-run `make-zip.ps1`; the script now fails loudly instead of writing an incomplete bundle |
+| `make-zip.ps1`: "No DLLs were bundled" or "missing critical DLLs" | MSYS2 not found or its DLLs were deleted | Check the path it reports; reinstall the section-3 packages; the script locates MSYS2 via `build\CMakeCache.txt` |
 | Tray icon missing | `assets/` not next to the executable | The build copies it automatically; re-run `ninja -C build` |
 | Port already in use | Stock Sunshine is installed and holding 47989 | Change `port_base` in the app settings (`cosmic.json`) |
 | Windows Firewall prompt on first launch | The host listens on the six GameStream ports | Allow the prompt (private networks) or add an inbound rule; the ports are listed in `docs/PROTOCOL.md` |

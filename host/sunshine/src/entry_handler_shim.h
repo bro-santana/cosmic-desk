@@ -74,8 +74,10 @@ namespace lifetime {
 #ifdef _WIN32
 /**
  * @brief Namespace for controlling the Sunshine service model on Windows.
- * @details Cosmic Desk is a plain autostart tray app (plan D6), not a Windows
- *          service; all service control operations are stubbed out.
+ * @details These stubs intentionally stay no-ops: hostglue calls config::parse
+ *          with a synthetic argc=1 (see src/hostglue/host.cpp), so the vendored
+ *          --shortcut branch in config.cpp can never run. The real service
+ *          control lives in src/app/service_ctrl.cpp (plan M9).
  */
 namespace service_ctrl {
   inline bool is_service_running() {

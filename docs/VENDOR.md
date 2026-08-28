@@ -34,6 +34,9 @@ Upstream projects below are GPL-3.0 or permissively licensed. The repository's
 | libgamestream (client pairing: `client.c`, `http.c`, `mkcert.c`, `xml.c`) | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | tag `v2.7.1`, commit `775444287305849ebdf4736c75298ad0713e2d5d` | Vendored, **modified** | `third-party/libgamestream/` |
 | FFmpeg decode + SDL render + Opus audio playback structure | https://github.com/moonlight-stream/moonlight-embedded (GPL-3.0) | tag `v2.7.1`, commit `775444287305849ebdf4736c75298ad0713e2d5d` | Pattern | `src/viewer/decoder.cpp`, `src/viewer/vrenderer.cpp`, `src/viewer/audio.cpp` |
 | SDL scancode → Windows VK table (`input/keymap.cpp`) | https://github.com/moonlight-stream/moonlight-qt (GPL-3.0) | tag `v6.1.0`, commit `f786e94c7b2f943e24e65d7d74deb539b827fc84` | Pattern/lifted, adapted | `src/viewer/keymap.cpp` (+ `src/viewer/input.cpp` follows the same upstream's input handling pattern) |
+| Sunshine service launcher (`tools/sunshinesvc.cpp`), adapted line-by-line: service renamed to `SERVICE_NAME "CosmicDeskService"`; child spawn `cosmicdesk.exe` with a mutable command line `cosmicdesk.exe --hidden --service`; log `%TEMP%\cosmicsvc.log` with inlined `MoveFileExW` rotation replacing `logging::rotate_log_file` (no Boost dependency); the Ctrl-C termination helper removed — the GUI child cannot receive console events and the upstream dance stalled every stop in STOP_PENDING for 20 s, so STOP/PRESHUTDOWN now `TerminateProcess` directly; header/provenance comment | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` | Vendored, **modified** | `tools/cosmicsvc.cpp` |
+| Sunshine service-control helpers (`src/entry_handler.cpp`, `namespace service_ctrl`, lines ~123-287), reimplemented: SCM helpers `is_service_running`/`start_service` and `wait_for_ui_ready` with a `GetTcpTable` readiness poll on the app's `port_base`; Boost logging replaced with `std::cout`/`fprintf(stderr)`; service name `CosmicDeskService` | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` | Adapted | `src/app/service_ctrl.{h,cpp}` |
+| Sunshine tray quit callback (`src/system_tray.cpp` `tray_quit_cb`, lines ~229-241), adapted: exit code `ERROR_SHUTDOWN_IN_PROGRESS` (1115) handshake so the service stops instead of respawning; explicit `--service` flag replaces upstream's `GetConsoleWindow()==nullptr` heuristic (our GUI build has no console) | https://github.com/LizardByte/Sunshine (GPL-3.0) | tag `v2026.516.143833`, commit `14ffa6fdaa53f7b51512be2b3d24f3939695403c` | Adapted | `src/main.cpp` tray Quit path |
 
 ## Modifications to vendored code
 
@@ -77,9 +80,11 @@ Files deleted from the upstream `src/` tree (plan D5 scope cuts):
 Modifications made so far (each marked in the source with a `COSMIC MODIFICATION`
 comment):
 
-- `appdata()` redirected to the CosmicDesk config dir (`%APPDATA%\CosmicDesk` /
-  `~/.config/cosmicdesk`, plan D6) in `platform/windows/misc.cpp` and
-  `platform/linux/misc.cpp`.
+- `appdata()` redirected to the CosmicDesk config dir (plan D6/D9) in
+  `platform/windows/misc.cpp` and `platform/linux/misc.cpp`: on Windows,
+  `%ProgramData%\CosmicDesk` when the process is elevated (the service spawns
+  the app as SYSTEM), `%APPDATA%\CosmicDesk` otherwise; on Linux,
+  `~/.config/cosmicdesk`.
 - Default config file is `host.conf` (plan D6/M1.3) instead of `sunshine.conf`
   (`config.cpp`); `src/hostglue/host.cpp` writes the `port` key from cosmic.json.
 - `pin_bridge` hook in `nvhttp.cpp` `pair()`: pending pairing requests are

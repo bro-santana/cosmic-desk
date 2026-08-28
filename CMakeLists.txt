@@ -90,6 +90,8 @@ add_executable(cosmicdesk
     src/main.cpp
     src/app/autostart.cpp
     src/app/settings.cpp
+    src/app/service_ctrl.cpp
+    src/app/single_instance.cpp
     src/hostglue/host.cpp
     src/hostglue/pin_bridge.cpp
     src/hostglue/displays.cpp
@@ -151,8 +153,9 @@ target_link_libraries(cosmicdesk PRIVATE
 )
 
 if(WIN32)
-    # shell32 provides ExtractIconEx for the tray icon.
-    target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32)
+    # shell32 provides ExtractIconEx for the tray icon; iphlpapi provides
+    # GetTcpTable for the --shortcut readiness poll (plan M9.1).
+    target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32 iphlpapi)
     # GUI app by default (WIN32_EXECUTABLE TRUE): no console window, so closing
     # the (never-shown) console cannot kill the tray app. Debug keeps a console
     # for log output; override either way with -DCOSMIC_CONSOLE=ON/OFF.
@@ -180,6 +183,14 @@ add_custom_command(TARGET cosmicdesk POST_BUILD
             $<TARGET_FILE_DIR:cosmicdesk>/assets
     COMMENT "Copying assets next to cosmicdesk"
 )
+
+# ---------------------------------------------------------------------------
+# tools: Windows-only helpers. cosmicsvc (M7) is the LocalSystem service
+# launcher that spawns cosmicdesk.exe as SYSTEM in the active console session.
+# ---------------------------------------------------------------------------
+if(WIN32)
+    add_subdirectory(tools)
+endif()
 
 # ---------------------------------------------------------------------------
 # Linux packaging (plan M6.3). Install rules are UNIX-only: on Windows the

@@ -13,10 +13,22 @@ File transfer, clipboard sync, gamepads.
 
 ## Known limitations
 
-- **Windows: no session-0 service.** A real Windows service cannot capture the
-  interactive desktop or inject input into it, so Cosmic Desk autostarts as a per-user
-  tray application instead. It therefore cannot be reached before a user logs in, and
-  cannot see UAC secure-desktop prompts at the moment.
+On Windows the recommended setup is the service
+(`packaging/windows/install-service.ps1`; the installer also offers it). The
+Start-Menu shortcut runs `cosmicdesk.exe --shortcut`, which starts the service
+when needed and then shows the running instance's window. Portable use without
+the service keeps the limitation below.
+
+- **Windows: service mode streams the secure desktop.** With the service installed
+  (installer task or `install-service.ps1`), Cosmic Desk runs elevated in the
+  interactive session and can stream UAC prompts, the lock screen and the logon
+  screen, and is reachable before login. Remaining limits: fast user switching
+  restarts the session (a stream mid-session ends); when service-launched,
+  config and credentials live in the machine-wide `C:\ProgramData\CosmicDesk`
+  (portable runs use `%APPDATA%\CosmicDesk`; the legacy per-profile folder is
+  migrated on first elevated start);
+  portable use without the service keeps the old limitation (no UAC/lock/logon
+  streaming).
 - **Linux: X11 only.** Wayland capture (portal/PipeWire) is planned but not in v1; log in
   with an Xorg session.
 - **Direct connections only.** For access across the internet you must forward these

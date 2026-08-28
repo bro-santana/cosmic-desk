@@ -138,19 +138,70 @@ namespace platf {
   decltype(WlanEnumInterfaces) *fn_WlanEnumInterfaces = nullptr;
   decltype(WlanSetInterface) *fn_WlanSetInterface = nullptr;
 
-  std::filesystem::path appdata() {
-    // COSMIC MODIFICATION: config & state live in %APPDATA%\CosmicDesk (plan D6),
-    // not next to the executable. Upstream returned exe_dir/"config".
-    PWSTR roaming_path = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, nullptr, &roaming_path))) {
-      std::filesystem::path path {roaming_path};
-      CoTaskMemFree(roaming_path);
-      return path / L"CosmicDesk";
+  namespace {
+    // True when the process token is elevated (elevated admin) or LocalSystem.
+    // Token elevation *type* alone is ambiguous for LocalSystem (it reports
+    // TokenElevationTypeDefault like a standard user), so an explicit SYSTEM
+    // SID check backs it up. Used by appdata() to pick between the
+    // machine-wide and per-user config locations.
+    bool is_elevated_or_system() {
+      HANDLE token = nullptr;
+      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+      }
+      bool elevated = false;
+      TOKEN_ELEVATION_TYPE type {};
+      DWORD size = 0;
+      if (GetTokenInformation(token, TokenElevationType, &type, sizeof(type), &size) &&
+          type == TokenElevationTypeFull) {
+        elevated = true;
+      }
+      if (!elevated) {
+        BYTE buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+        DWORD needed = 0;
+        if (GetTokenInformation(token, TokenUser, buffer, sizeof(buffer), &needed)) {
+          auto *token_user = reinterpret_cast<TOKEN_USER *>(buffer);
+          BYTE system_sid[SECURITY_MAX_SID_SIZE];
+          DWORD sid_size = sizeof(system_sid);
+          if (CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid, &sid_size) &&
+              EqualSid(token_user->User.Sid, system_sid)) {
+            elevated = true;
+          }
+        }
+      }
+      CloseHandle(token);
+      return elevated;
     }
-    // Fallback if the known-folder API is unavailable: keep the old location.
-    WCHAR sunshine_path[MAX_PATH];
-    GetModuleFileNameW(nullptr, sunshine_path, _countof(sunshine_path));
-    return std::filesystem::path {sunshine_path}.remove_filename() / L"config"sv;
+  }  // namespace
+
+  std::filesystem::path appdata() {
+    // COSMIC MODIFICATION: config & state live in %APPDATA%\CosmicDesk for
+    // unelevated (portable) runs and in %ProgramData%\CosmicDesk when the
+    // process runs elevated (the service spawns the app as SYSTEM, whose
+    // %APPDATA% is C:\Windows\System32\config\systemprofile — not a sane home
+    // for user data; ProgramData is the machine-wide location). Upstream
+    // returned exe_dir/"config". Keep in sync with
+    // src/app/settings.cpp config_dir() — the two must agree.
+    //
+    // The decision is by token identity (see is_elevated_or_system below),
+    // not by write capability: a write probe is fooled by the creator-owner
+    // right an unelevated run gets when it is the first to create
+    // C:\ProgramData\CosmicDesk (Windows lets Users create subfolders there).
+    static const std::filesystem::path dir = []() {
+      PWSTR base_path = nullptr;
+      KNOWNFOLDERID folder =
+        is_elevated_or_system() ? FOLDERID_ProgramData : FOLDERID_RoamingAppData;
+      if (SUCCEEDED(SHGetKnownFolderPath(folder, KF_FLAG_CREATE, nullptr, &base_path))) {
+        std::filesystem::path path {base_path};
+        CoTaskMemFree(base_path);
+        return path / L"CosmicDesk";
+      }
+      // Fallback if the known-folder API is unavailable: keep the old location.
+      WCHAR sunshine_path[MAX_PATH];
+      GetModuleFileNameW(nullptr, sunshine_path, _countof(sunshine_path));
+      return std::filesystem::path {sunshine_path}.remove_filename() / L"config"sv;
+    }();
+    return dir;
   }
 
   std::string from_sockaddr(const sockaddr *const socket_address) {
