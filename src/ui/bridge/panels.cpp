@@ -1088,7 +1088,7 @@ void draw_pin_panel(const BridgeInput& in, BridgeState* state) {
     ImGui::SetWindowFontScale(pin_px / 13.0f);
     const ImVec2 pin_size = cosmic::ui::TextSpacedSize(in.pairing_pin.c_str(), 0.28f);
     const ImVec2 pin_center(scr.x + scr.w * 0.5f, scr.y + scr.h * 0.5f);
-    const float pulse = 0.5f + 0.5f * std::cosf(2.0f * 3.14159265f *
+    const float pulse = 0.5f + 0.5f * std::cos(2.0f * 3.14159265f *
                                                 static_cast<float>(in.time_s) / kSweepPeriodS);
     const float glow_r = std::min(scr.w * 0.25f, 120.0f * scale);
     draw_list->AddCircleFilled(pin_center, glow_r,

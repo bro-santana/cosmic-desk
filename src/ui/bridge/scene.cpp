@@ -704,8 +704,8 @@ void DrawDashedEllipse(SDL_Renderer* renderer, float cx, float cy, float rx,
         return;
     }
     const float rot = rotation_deg * 3.14159265f / 180.0f;
-    const float cosr = std::cosf(rot);
-    const float sinr = std::sinf(rot);
+    const float cosr = std::cos(rot);
+    const float sinr = std::sin(rot);
 
     constexpr int kSteps = 2048;
     float prev_x = 0.0f;
@@ -714,8 +714,8 @@ void DrawDashedEllipse(SDL_Renderer* renderer, float cx, float cy, float rx,
     for (int i = 0; i <= kSteps; ++i) {
         const float t = static_cast<float>(i) / kSteps;
         const float ang = 2.0f * 3.14159265f * t;
-        const float ex = rx * std::cosf(ang);
-        const float ey = ry * std::sinf(ang);
+        const float ex = rx * std::cos(ang);
+        const float ey = ry * std::sin(ang);
         // Rotation is applied to the sample points around the center.
         const float px = cx + ex * cosr - ey * sinr;
         const float py = cy + ex * sinr + ey * cosr;
@@ -1050,7 +1050,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     for (const Twinkle& t : g_state.twinkles) {
         const float phase = std::fmod((in.time_s + t.delay) / t.period, 1.0f);
         // Ease-in-out sine matching the CSS twk keyframes (0%/100% .12, 50% .9).
-        const float o = 0.12f + 0.78f * (0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * phase));
+        const float o = 0.12f + 0.78f * (0.5f - 0.5f * std::cos(2.0f * 3.14159265f * phase));
         const float size = t.size * scale;
         const SDL_Rect rect{
             static_cast<int>(t.x * out_w),
@@ -1179,7 +1179,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
                                               layer.drift_period_s,
                                           1.0f);
             const float ease =
-                0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * phase);
+                0.5f - 0.5f * std::cos(2.0f * 3.14159265f * phase);
             anim_ox = layer.drift_dx * ease * scale;
             anim_oy = layer.drift_dy * ease * scale;
         }
@@ -1284,7 +1284,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             std::min(0.74f * out_h, 720.0f * scale) / 2.0f;
         // ringspin: -8deg + 3deg*(0.5 - 0.5*cos(2pi*t/22)) sways -8 -> -5 -> -8.
         const float sway =
-            0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / 22.0f));
+            0.5f - 0.5f * std::cos(2.0f * 3.14159265f * (in.time_s / 22.0f));
         const float ring_rot = -8.0f + 3.0f * sway;
         // rgba(184,151,211,.18) = kPurple at alpha 46 (0.18 * 255).
         const uint32_t purple = kPurple;

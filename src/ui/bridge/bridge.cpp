@@ -228,19 +228,19 @@ ImVec2 CardOrbitCenter(const BridgeInput& in, const cosmic::ui::scene::CursorSmo
     // Prototype (Cosmic Desk.dc.html): 0-indexed i, base = -pi/2 + (i-1)*1.15,
     // sway = sin(now*0.09 + i*2.1)*0.07 + cx*0.05.
     const float base = -3.14159265f / 2.0f + (index - 1) * 1.15f;
-    const float sway = 0.07f * std::sinf(0.09f * in.time_s + 2.1f * index) +
+    const float sway = 0.07f * std::sin(0.09f * in.time_s + 2.1f * index) +
                        0.05f * cursor.x;
     const float ang = base + sway;
     const float rx = std::min(0.26f * vp_size.x, 400.0f * scale);
     const float ry = std::min(0.24f * vp_size.y, 235.0f * scale);
     const float tilt = -8.0f * 3.14159265f / 180.0f;
     const float depth = kCardDepths[index % 3];
-    const float ox = rx * std::cosf(ang);
-    const float oy = ry * std::sinf(ang);
+    const float ox = rx * std::cos(ang);
+    const float oy = ry * std::sin(ang);
     // Tilted ellipse + the card's own parallax (depth * 0.35, like the
     // prototype's data-depth transform).
-    float x = ox * std::cosf(tilt) - oy * std::sinf(tilt) - cursor.x * depth * 0.35f;
-    float y = ox * std::sinf(tilt) + oy * std::cosf(tilt) - cursor.y * depth * 0.35f;
+    float x = ox * std::cos(tilt) - oy * std::sin(tilt) - cursor.x * depth * 0.35f;
+    float y = ox * std::sin(tilt) + oy * std::cos(tilt) - cursor.y * depth * 0.35f;
     // Clamp so the card stays fully in viewport with an 8px margin — but only
     // while the scene is at rest. During the warp (U5) the clamp is skipped so
     // the cards exit through the viewport edges and stay out while w ~ 1.
@@ -259,7 +259,7 @@ ImVec2 CardOrbitCenter(const BridgeInput& in, const cosmic::ui::scene::CursorSmo
     y *= 1.0f + in.warp * in.warp * 5.0f;
     // Float bob: translateY 0 <-> -8px, cosine ease, period by index.
     const float period = kCardBobPeriods[index % 3];
-    const float bob = -8.0f * (0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / period)));
+    const float bob = -8.0f * (0.5f - 0.5f * std::cos(2.0f * 3.14159265f * (in.time_s / period)));
     return ImVec2(ax + x, ay + y + bob * scale);
 }
 
@@ -682,7 +682,7 @@ BridgeAction DrawEmptyCard(const BridgeInput& in, BridgeState* state,
     const float w = kEmptyW * scale;
     const float h = kEmptyH * scale;
     // Float bob: translateY 0 <-> -8px, cosine ease, 6.5s (prototype `holo`).
-    const float bob = -8.0f * (0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / kEmptyBobPeriodS)));
+    const float bob = -8.0f * (0.5f - 0.5f * std::cos(2.0f * 3.14159265f * (in.time_s / kEmptyBobPeriodS)));
     const ImVec2 pos(0.08f * vp_size.x, 0.30f * vp_size.y + bob * scale);
 
     // Card frame: bg + green-tinted border.
@@ -693,7 +693,7 @@ BridgeAction DrawEmptyCard(const BridgeInput& in, BridgeState* state,
                        1.0f * scale);
 
     // Pulsing green dot (2s cosine pulse, like the hosting beacon).
-    const float pulse = 0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / 2.0f));
+    const float pulse = 0.5f - 0.5f * std::cos(2.0f * 3.14159265f * (in.time_s / 2.0f));
     const ImVec2 dot_center(pos.x + 24.5f * scale, pos.y + 24.5f * scale);
     const ImVec4 green = cosmic::ui::Rgba(cosmic::ui::kGreen);
     draw_list->AddCircleFilled(dot_center, (4.5f + 6.0f * pulse) * scale,
@@ -873,7 +873,7 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
 
     // 2.6s pulse, eased 0..1 (prototype `beacon` keyframes).
     const float pulse =
-        0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / kBeaconPeriodS));
+        0.5f - 0.5f * std::cos(2.0f * 3.14159265f * (in.time_s / kBeaconPeriodS));
 
     const ImVec4 green = cosmic::ui::Rgba(cosmic::ui::kGreen);
     // Soft outer glow: kGreen at ~0.35 * pulse alpha, 1.6x the dot radius.
