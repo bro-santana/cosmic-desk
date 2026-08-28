@@ -112,5 +112,5 @@ Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-
 see [`LICENSE`](LICENSE).
 
 <p align="left">
-  <img src="assets/cosmicdesk-logo-text.svg" alt="Cosmic Desk" width="960" />
+  <img src="assets/cosmicdesk-logo-text-trail.svg" alt="Cosmic Desk" width="960" />
 </p>
