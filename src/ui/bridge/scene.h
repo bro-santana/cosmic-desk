@@ -9,13 +9,12 @@
 //   - Art box: the layers are authored on a 1620.8481 x 1200 canvas and drawn
 //     at a width of max(104vw, 140vh), centered. This guarantees parallax
 //     translation never reveals the art edges on any viewport.
-//   - Parallax smoothing: the cursor is chased by a third-order critically
-//     damped filter (three poles at -2.875 rad/s, time-corrected explicit
-//     Euler, dt clamped to <= 0.1 s): the acceleration ramps up from zero, so
-//     the onset is the exact mirror of the decelerating arrival. A deliberate
-//     feel change from the prototype's constant-rate 0.055/frame exponential,
-//     requested after the U7 review (ramp in; speed halved; then the onset
-//     re-shaped as the reversed arrival made 15% faster).
+//   - Parallax smoothing: the cursor chase ramps its rate up from a gentle
+//     floor while the gesture is live and decays it again once the motion
+//     settles, so the onset mirrors the warp re-entry in reverse and the tail
+//     glides progressively slower with the same pace (a tad faster). A
+//     deliberate feel change from the prototype's constant-rate 0.055/frame
+//     exponential, requested after the U7 review.
 //   - Layer depth table (back -> front), from the handoff README parallax table
 //     and the prototype's data-ex/ey/es attributes:
 //

@@ -324,11 +324,11 @@ flash 2.2s peak 72%
 
 ## 6. Status & remaining polish
 
-- **Post-U7 feel change (requested):** the parallax cursor now uses a
-  third-order critically damped filter instead of the prototype's
-  constant-rate 0.055/frame exponential: the acceleration ramps up from zero
-  (the onset mirrors the decelerating arrival), tuned 15% faster than the
-  previous spring pass (2.875 rad/s, ~2 s to 95 % settle). Documented in
+- **Post-U7 feel change (requested):** the parallax cursor now mirrors the
+  warp re-entry in reverse: the chase rate ramps up from a gentle floor while
+  the gesture is live and decays once it settles, so the onset accelerates
+  like the warp return played backwards and the tail glides progressively
+  slower at the same (a tad faster: 0.06 vs 0.05) pace. Documented in
   scene.h.
 
 U0-U6 are complete and the classic UI (host_list, settings_window) is deleted

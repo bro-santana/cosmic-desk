@@ -71,13 +71,18 @@ constexpr int kLayerCount = static_cast<int>(sizeof(kLayers) / sizeof(kLayers[0]
 constexpr int kReflexIndex = kLayerCount - 1;
 constexpr int kScreenLogoIndex = 6;  // screen-logo.svg entry in kLayers
 
-// Cursor-smoother natural frequency (rad/s). THIRD-ORDER critically damped
-// filter (three poles at -omega): the acceleration itself ramps from zero, so
-// the layers glide off with the exact mirrored profile of their decelerating
-// arrival -- the onset is as gentle as the settle-out (the second-order
-// spring still snapped its acceleration on instantly). 2.875 rad/s = the
-// previous 2.5 rad/s tuning made 15% faster as requested; 95% settle ~2 s.
-constexpr float kCursorOmega = 2.875f;
+// Cursor chase tuning (per-frame factors at a nominal 60 fps, time-corrected
+// in draw() like every other easing). The onset ramp mirrors the warp
+// re-entry in reverse: while the target moves (or the layers are still
+// catching up), the chase rate climbs exponentially from a gentle floor; once
+// the motion is done the rate decays back, so the tail glides progressively
+// slower -- the exact satisfying pace of the warp return, with the onset as
+// its mirror and the whole motion a tad faster (0.06 vs the warp's 0.05).
+constexpr float kRamp60 = 0.06f;     // onset/tail time constant
+constexpr float kChase60 = 0.085f;   // full chase rate once ramped
+constexpr float kFloorFrac = 0.30f;  // minimum rate as a fraction of full
+constexpr float kMoveEps = 0.01f;    // target change beyond jitter -> ramp up
+constexpr float kSettleEps = 0.02f;  // error below this -> ramp decays
 
 // First layer of the desk group (desk.svg). The warp flash draws just before
 // it, between the sky layers and the desk group (UI_MIGRATION A3).
@@ -107,12 +112,9 @@ struct State {
     std::vector<Twinkle> twinkles;
     float cx = 0.0f;  // smoothed cursor, -1..1
     float cy = 0.0f;
-    float vx = 0.0f;  // cursor velocity (third-order smoother)
-    float vy = 0.0f;
-    float ax = 0.0f;  // cursor acceleration (ramps up from zero on onset)
-    float ay = 0.0f;
+    float ramp = 0.0f;  // onset ramp 0..1 (see the k* constants above)
     float tx_last = 0.0f;  // last valid cursor target (held while the mouse is
-    float ty_last = 0.0f;  // outside the window so the filter keeps settling)
+    float ty_last = 0.0f;  // outside the window so the chase keeps gliding)
     float last_time_s = -1.0f;  // previous frame's in.time_s (-1 = first frame)
     // U5 warp transition: warp_t eases toward warp_target each frame (1 =
     // streaming, 0 = bridge). flash_start_s anchors the 2.2s warp flash in
@@ -755,10 +757,7 @@ void shutdown(SDL_Renderer* renderer) {
     g_state.twinkles.clear();
     g_state.cx = 0.0f;
     g_state.cy = 0.0f;
-    g_state.vx = 0.0f;
-    g_state.vy = 0.0f;
-    g_state.ax = 0.0f;
-    g_state.ay = 0.0f;
+    g_state.ramp = 0.0f;
     g_state.tx_last = 0.0f;
     g_state.ty_last = 0.0f;
     g_state.last_time_s = -1.0f;
@@ -784,40 +783,46 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     // ours at the top of every draw. Leaving it set on return is harmless.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
-    // 1. Smooth the cursor toward its target with a THIRD-ORDER critically
-    // damped filter (three poles at -kCursorOmega). The arrival has always
-    // felt right (acceleration tapering smoothly to zero); this makes the
-    // onset its exact mirror: the acceleration itself ramps up from zero, so
-    // the layers glide off instead of lurching. Deliberate feel change from
-    // the prototype's raw 0.055/frame exponential. dt is clamped so a hitch
-    // (or the first frame) cannot teleport the scene; the explicit Euler step
-    // is stable far beyond the clamp (dt << 2/omega).
+    // 1. Smooth the cursor toward its target with an accelerating onset that
+    // mirrors the warp re-entry in reverse: while the target moves - or the
+    // layers are still catching up - the chase rate ramps up exponentially
+    // from a gentle floor; once the motion is done the rate decays back, so
+    // the tail glides progressively slower, the same satisfying pace as the
+    // warp return. Deliberate feel change from the prototype's raw
+    // 0.055/frame constant-rate exponential. dt is clamped so a hitch (or
+    // the first frame) cannot teleport the scene.
     float dt = g_state.last_time_s >= 0.0f ? in.time_s - g_state.last_time_s
                                            : 1.0f / 60.0f;
     g_state.last_time_s = in.time_s;
     dt = std::clamp(dt, 0.0f, 0.1f);
+    const float k_ramp = 1.0f - std::pow(1.0f - kRamp60, dt * 60.0f);
+    const float k_chase = 1.0f - std::pow(1.0f - kChase60, dt * 60.0f);
     const float tx = 2.0f * in.mouse_x / static_cast<float>(out_w) - 1.0f;
     const float ty = 2.0f * in.mouse_y / static_cast<float>(out_h) - 1.0f;
     // ImGui reports the mouse position as (-FLT_MAX,-FLT_MAX) while the cursor
     // is outside the window. Chase the LAST VALID target instead of the
-    // poisoned value: the filter keeps settling (decelerating) exactly like
-    // the prototype does when the mouse stops moving, and NaN can never enter
-    // the state.
+    // poisoned value: the layers keep gliding and decelerating, and NaN can
+    // never enter the state.
     if (std::isfinite(tx) && std::isfinite(ty)) {
+        // The ramp climbs while the gesture is live (the target moved beyond
+        // jitter) or the layers still have ground to cover; it decays once
+        // the motion settles, so every new gesture starts from a crawl.
+        const float move =
+            std::fabs(tx - g_state.tx_last) + std::fabs(ty - g_state.ty_last);
+        const float err = std::fabs(tx - g_state.cx) + std::fabs(ty - g_state.cy);
+        const float ramp_target = (move > kMoveEps || err > kSettleEps) ? 1.0f : 0.0f;
+        g_state.ramp += (ramp_target - g_state.ramp) * k_ramp;
         g_state.tx_last = tx;
         g_state.ty_last = ty;
+    } else {
+        // Mouse left the window: ease the ramp down; the chase below finishes
+        // the approach at the decaying rate (the warp-return glide).
+        g_state.ramp += (0.0f - g_state.ramp) * k_ramp;
     }
     {
-        const float w = kCursorOmega;
-        // x''' + 3w x'' + 3w^2 x' + w^3 x = w^3 T (three poles at -w).
-        g_state.ax += (w * w * w * (g_state.tx_last - g_state.cx) -
-                       3.0f * w * w * g_state.vx - 3.0f * w * g_state.ax) * dt;
-        g_state.ay += (w * w * w * (g_state.ty_last - g_state.cy) -
-                       3.0f * w * w * g_state.vy - 3.0f * w * g_state.ay) * dt;
-        g_state.vx += g_state.ax * dt;
-        g_state.vy += g_state.ay * dt;
-        g_state.cx += g_state.vx * dt;
-        g_state.cy += g_state.vy * dt;
+        const float rate = k_chase * (kFloorFrac + (1.0f - kFloorFrac) * g_state.ramp);
+        g_state.cx += (g_state.tx_last - g_state.cx) * rate;
+        g_state.cy += (g_state.ty_last - g_state.cy) * rate;
     }
 
     // Warp transition (U5): same time-corrected easing as the parallax above,
