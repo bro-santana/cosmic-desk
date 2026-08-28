@@ -32,9 +32,12 @@
 //
 //   The prototype's rotateY/rotateX 3D tilt on the desk group is deliberately
 //   omitted (decision A5a): ImGui cannot rotate text, so only the parallax
-//   translation is kept. Later milestones add the nebula sway, orbit ring,
-//   vignette, shooting star and warp flash; this module is structured to make
-//   those easy to append without touching the layer pipeline.
+//   translation is kept. U1 owns the per-layer drift animations, the warp
+//   flash, the orbit ring, the vignette, the shooting star and the dashed
+//   geometry helpers; still to come are the nebula per-band sway (later
+//   polish), the tether beams (U3), the boot sequence/beacon/glow (U2), the
+//   cards/dock (U3) and the warp animation (U5); this module is structured to
+//   make those easy to append without touching the layer pipeline.
 
 #pragma once
 #include <SDL.h>
@@ -47,6 +50,8 @@ struct SceneInput {
     float mouse_y = 0.0f;
     float time_s = 0.0f;   // SDL_GetTicks64() / 1000.0f
     float motion = 1.0f;   // parallax strength (design "motion" prop)
+    float flash_alpha = 0.0f;  // warp flash opacity; U5 animates 0->1->0 during
+                               // the warp, U1 draws it when > 0
 };
 
 // Loads nothing yet; prepares state. Call once after the renderer exists.
