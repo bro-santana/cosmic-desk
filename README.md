@@ -14,7 +14,8 @@ File transfer, clipboard sync, gamepads.
 ## Known limitations
 
 On Windows the recommended setup is the service
-(`packaging/windows/install-service.ps1`; the installer also offers it). The
+(`packaging/windows/install-service.ps1`, or the installer's machine-wide
+install, where the service task is checked by default). The
 Start-Menu shortcut runs `cosmicdesk.exe --shortcut`, which starts the service
 when needed and then shows the running instance's window. Portable use without
 the service keeps the limitation below.

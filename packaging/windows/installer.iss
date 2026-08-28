@@ -1,12 +1,19 @@
 ; Cosmic Desk - Windows installer (plan M6.4).
 ;
 ; Inno Setup script (6 or 7) wrapping the standalone bundle produced by
-; packaging/windows/make-zip.ps1. Per-user install by default (no admin/UAC,
-; machine-wide is offered), Start Menu and optional desktop shortcuts,
-; uninstaller included. The shortcuts run cosmicdesk.exe --shortcut, which
-; starts the Cosmic Desk service when needed (plan M9). An optional service
-; task installs the Cosmic Desk service (plan M10), which streams UAC prompts,
-; the lock screen and the logon screen; the uninstaller removes it first.
+; packaging/windows/make-zip.ps1. Machine-wide install by default (the first
+; wizard page offers a per-user install, also reachable as /CURRENTUSER),
+; Start Menu and optional desktop shortcuts, uninstaller included. The
+; shortcuts run cosmicdesk.exe --shortcut, which starts the Cosmic Desk
+; service when needed (plan M9). A service task (checked by default, plan
+; M10) installs the Cosmic Desk service, which streams UAC prompts, the lock
+; screen and the logon screen; the uninstaller removes it first.
+;
+; The service is intentionally tied to the machine-wide install: the service
+; runs as LocalSystem, and executing binaries from a user-writable per-user
+; location (%LocalAppData%\Programs\...) would let any process of that user
+; swap the exe/DLLs and run arbitrary code as SYSTEM. Program Files is
+; admin-only, so the machine-wide install is the safe home for the service.
 ;
 ; Usage (from the repo root, after configuring CMake and running make-zip.ps1):
 ;   ISCC.exe packaging\windows\installer.iss
@@ -38,10 +45,11 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Per-user by default (installs to %LocalAppData%\Programs\Cosmic Desk, no UAC
-; prompt); an admin can opt into a machine-wide install from the first wizard
-; page or with /ALLUSERS on the command line.
-PrivilegesRequired=lowest
+; Machine-wide by default (installs to {autopf}, one UAC prompt; the service
+; runs from this admin-only location for security, see the header). A user
+; can opt into a per-user install from the first wizard page or with
+; /CURRENTUSER on the command line; the service task is skipped in that mode.
+PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog commandline
 UninstallDisplayIcon={app}\{#AppExeName}
 WizardStyle=modern
@@ -53,7 +61,7 @@ Source: "..\..\dist\CosmicDesk\*"; DestDir: "{app}"; Flags: ignoreversion recurs
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
-Name: "service"; Description: "Install the Cosmic Desk service (recommended: lets you stream UAC prompts, the lock screen and the logon screen)"; GroupDescription: "Additional components:"; Flags: unchecked
+Name: "service"; Description: "Install the Cosmic Desk service (recommended: lets you stream UAC prompts, the lock screen and the logon screen; requires the machine-wide install)"; GroupDescription: "Additional components:"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--shortcut"
@@ -61,7 +69,12 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Tasks: service; StatusMsg: "Installing the Cosmic Desk service..."; Flags: runhidden
+; The service only makes sense (and is only safe) in admin install mode:
+; per-user installs leave the binaries in a user-writable folder, which must
+; never be executed by the LocalSystem service (see the file header).
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Tasks: service; Check: IsAdminInstallMode; StatusMsg: "Installing the Cosmic Desk service..."; Flags: runhidden
 
 [UninstallRun]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Flags: runhidden
+; Same gating as [Run]: only a machine-wide install can own the service.
+; The script exits 0 without elevating when the service does not exist.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Check: IsAdminInstallMode; Flags: runhidden

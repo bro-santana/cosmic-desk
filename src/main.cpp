@@ -246,10 +246,14 @@ int main(int argc, char** argv) {
         }
         if (!cosmic::service_ctrl::is_service_running()) {
             // The service is not installed (portable install): do not stall
-            // for 30 s waiting for a UI that will never come.
+            // for 30 s waiting for a UI that will never come. A per-user
+            // install cannot run the service safely (the LocalSystem service
+            // would execute binaries from a user-writable folder), so point
+            // the user at the machine-wide reinstall.
             MessageBoxW(nullptr,
-                        L"Could not start the Cosmic Desk service. Install it with "
-                        L"packaging\\windows\\install-service.ps1 or reinstall Cosmic Desk.",
+                        L"Could not start the Cosmic Desk service. It requires the "
+                        L"machine-wide install: reinstall Cosmic Desk and keep the "
+                        L"service option checked.",
                         L"Cosmic Desk", MB_ICONWARNING | MB_OK);
             return 1;
         }

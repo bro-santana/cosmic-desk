@@ -641,9 +641,12 @@ again only raises the window.
 
 ### M10 — Installer integration, secure-desktop verification, docs (3–4 days)
 **Goal:** one-click install with the service; the UAC freeze is demonstrably gone.
-1. `installer.iss`: task "Install the Cosmic Desk service (recommended)" running
-   `install-service.ps1` after install (the script self-elevates, so
-   `PrivilegesRequired=lowest` is kept); `[UninstallRun]` runs
+1. `installer.iss`: machine-wide install is the default (`PrivilegesRequired=admin`,
+   per-user still offered on the first wizard page); task "Install the Cosmic Desk
+   service (recommended ...)" is checked by default and its [Run]/[UninstallRun]
+   entries are gated with `Check: IsAdminInstallMode` — the LocalSystem service must
+   never execute binaries from a user-writable per-user location (EoP: the user could
+   swap the exe/DLLs and get SYSTEM code execution); `[UninstallRun]` runs
    `uninstall-service.ps1` before file removal.
 2. `make-zip.ps1`: bundle `tools\cosmicsvc.exe` (→ `dist\CosmicDesk\tools\`) and
    both service scripts.

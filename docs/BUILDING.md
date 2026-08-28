@@ -107,11 +107,12 @@ ISCC.exe packaging\windows\installer.iss
 
 The script is `packaging/windows/installer.iss`; it produces
 `dist\CosmicDesk-windows-x64-setup.exe`, with Start Menu and optional desktop
-shortcuts and an uninstaller. It defaults to a per-user install into
-`%LocalAppData%\Programs\Cosmic Desk` with no admin/UAC prompt; the first
-wizard page offers a machine-wide install under `Program Files` instead, which
-is also reachable as `setup.exe /ALLUSERS` (and `/CURRENTUSER` to force the
-default). No version is passed on the command line — it comes from
+shortcuts and an uninstaller. It defaults to a machine-wide install under
+`Program Files` (one UAC prompt) and offers a per-user install on the first
+wizard page (also reachable as `/CURRENTUSER`). The Cosmic Desk service task
+is checked by default and only applies to the machine-wide install — the
+LocalSystem service must never run binaries from a user-writable per-user
+folder. No version is passed on the command line — it comes from
 `build\packaging\windows\version.iss`, so the build must be configured first
 (see [Versioning](#versioning)). The installer is unsigned; SmartScreen will
 warn until a code-signing certificate is set up.
