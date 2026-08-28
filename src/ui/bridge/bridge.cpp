@@ -466,8 +466,13 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
 
     // Border-tab title: drawn after the child so the kBg tab covers the border
     // at the top edge (the tab sits ON the border per the design).
-    const uint32_t state_color = host.paired ? kAmber : kMuted;
-    const char* state_label = host.paired ? "STANDBY" : "NOT PAIRED";
+    // State mapping (docs/UI_MIGRATION.md U3 §3): online && paired -> LINK
+    // READY (green); paired -> STANDBY (amber); !paired -> NOT PAIRED (muted).
+    // `online` comes from the U6 presence poller.
+    const bool online = host.paired && in.presence.count(host.address) > 0 &&
+                        in.presence.at(host.address);
+    const uint32_t state_color = online ? kGreen : (host.paired ? kAmber : kMuted);
+    const char* state_label = online ? "LINK READY" : (host.paired ? "STANDBY" : "NOT PAIRED");
     const float tab_top = pos.y - 9.0f * scale;
     const float tab_h = 14.0f * scale;
     const float tab_cy = tab_top + tab_h * 0.5f;

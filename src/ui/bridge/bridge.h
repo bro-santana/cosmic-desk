@@ -5,6 +5,7 @@
 // session status.
 #pragma once
 #include "app/settings.h"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,7 @@ struct BridgeInput {
     int paired_count = 0;
     double time_s = 0.0;
     std::vector<cosmic::SavedHost> hosts;   // settings.hosts_snapshot()
+    std::map<std::string, bool> presence;   // address -> reachable (U6)
     std::string session_label = "IDLE";     // IDLE/PAIRING/CONNECTING/STREAMING
     bool session_busy = false;              // g_session->busy()
     bool connected_or_connecting = false;   // show DISCONNECT

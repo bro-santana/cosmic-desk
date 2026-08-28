@@ -5,6 +5,7 @@
 // threads (M1) and the viewer session (M2) plug into this loop later.
 
 #include "app/autostart.h"
+#include "app/presence.h"
 #include "app/settings.h"
 #include "app/service_ctrl.h"
 #include "app/single_instance.h"
@@ -448,6 +449,11 @@ int main(int argc, char** argv) {
     // Bridge overlay state (docs/UI_MIGRATION.md U2): persists the boot
     // sequence across frames (and across hide/show cycles).
     cosmic::ui::bridge::BridgeState bridge_state;
+    // Last host set handed to the presence poller (U6): presence::start is
+    // cheap, but we only call it when the address/port list actually changed
+    // (pair success adds a host; Edit/Remove change entries) so the worker's
+    // poll set stays in sync without a per-frame call.
+    std::vector<std::pair<std::string, int>> last_poll_hosts;
     // Settings edits save on the Settings panel's close transition, not per
     // tick (docs/UI_MIGRATION.md U4); the shutdown save() is the fallback.
     bool settings_dirty = false;
@@ -817,6 +823,23 @@ int main(int argc, char** argv) {
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
         bridge_input.time_s = static_cast<double>(SDL_GetTicks64()) / 1000.0;
         bridge_input.hosts = settings.hosts_snapshot();
+        // U6: keep the presence poller's target set in sync with the current
+        // hosts (address + resolved port). Only call start() when the set
+        // actually changed — pair success adds a host, Edit/Remove change
+        // entries — so the worker's poll set stays current without a per-frame
+        // call (start() just swaps targets when the worker is already alive).
+        {
+            std::vector<std::pair<std::string, int>> poll_hosts;
+            poll_hosts.reserve(bridge_input.hosts.size());
+            for (const cosmic::SavedHost& host : bridge_input.hosts) {
+                poll_hosts.emplace_back(host.address, settings.port_for(host.address));
+            }
+            if (poll_hosts != last_poll_hosts) {
+                cosmic::presence::start(poll_hosts);
+                last_poll_hosts = std::move(poll_hosts);
+            }
+        }
+        bridge_input.presence = cosmic::presence::snapshot();
         bridge_input.warp = cosmic::ui::scene::warp_progress();
         switch (session_status.state) {
         case cosmic::viewer::ViewerState::Idle:
@@ -1005,6 +1028,8 @@ int main(int argc, char** argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     cosmic::hostglue::stop();
+    // Stop the presence poller (U6) and join its worker before SDL_Quit.
+    cosmic::presence::stop();
     cosmic::single_instance::release();
     SDL_Quit();
 

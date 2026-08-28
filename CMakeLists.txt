@@ -93,6 +93,7 @@ target_link_libraries(cosmic_moonlight_common PRIVATE
 add_executable(cosmicdesk
     src/main.cpp
     src/app/autostart.cpp
+    src/app/presence.cpp
     src/app/settings.cpp
     src/app/service_ctrl.cpp
     src/app/single_instance.cpp
