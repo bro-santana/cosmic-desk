@@ -10,15 +10,34 @@
 # against each other instead of every one of them claiming 0.0.0.0.
 #
 # The packaging scripts never re-derive any of this - that is how the deb and
-# the Windows installer would drift apart. cosmicdesk_write_version_files()
-# emits the values into the build tree for them to read:
+# the Windows installer would drift apart. The values are emitted into the
+# build tree for them to read:
 #   build/packaging/version.env         -> packaging/linux/make-deb.sh
 #   build/packaging/windows/version.iss -> packaging/windows/installer.iss
 #
-# This module is included BEFORE project() so the triple can be passed to it,
-# so it must not depend on anything project() sets up.
+# This file runs in two modes:
+#
+#   included (from CMakeLists.txt, BEFORE project() so the derived triple can be
+#     passed to it - so it must not depend on anything project() sets up):
+#     derives the variables and defines cosmicdesk_write_version_files().
+#
+#   script (`cmake -DCOSMICDESK_SOURCE_DIR=... -DCOSMICDESK_BINARY_DIR=... -P
+#     cmake/CosmicDeskVersion.cmake`): derives and rewrites the two generated
+#     files, nothing else. The cosmicdesk_version target runs this on EVERY
+#     build.
+#
+# That build-time refresh is not belt-and-braces, it is the whole guarantee.
+# `git tag v1.2.3` changes what `git describe` reports while touching no file
+# CMake can watch - not HEAD, not the branch ref. Deriving only at configure
+# time therefore stamps the version of the commit *before* the tag onto the
+# release artifact, and tag-then-package is exactly the release workflow.
+# Re-deriving on every build closes that window, since packaging follows a build.
 
-set(_cd_root "${CMAKE_CURRENT_LIST_DIR}/..")
+if(DEFINED COSMICDESK_SOURCE_DIR)
+    set(_cd_root "${COSMICDESK_SOURCE_DIR}")
+else()
+    get_filename_component(_cd_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+endif()
 
 find_package(Git QUIET)
 
@@ -88,9 +107,33 @@ if(_cd_tweak GREATER 65535)
 endif()
 set(COSMICDESK_VERSION_INFO "${COSMICDESK_VERSION}.${_cd_tweak}")
 
-# Re-run CMake when HEAD moves, or the generated files go stale. On a branch
-# HEAD is a symref and only the ref file it points at changes per commit.
-foreach(_cd_watch "${_cd_root}/.git/HEAD" "${_cd_root}/.git/packed-refs")
+# configure_file leaves the output untouched when the content is unchanged, so
+# running this on every build costs nothing and causes no rebuild churn.
+function(_cosmicdesk_generate_version_files _bindir)
+    configure_file(${_cd_root}/packaging/version.env.in
+                   ${_bindir}/packaging/version.env @ONLY)
+    configure_file(${_cd_root}/packaging/windows/version.iss.in
+                   ${_bindir}/packaging/windows/version.iss @ONLY)
+endfunction()
+
+# Script mode (`cmake -P`): regenerate and stop. Nothing below applies.
+if(CMAKE_SCRIPT_MODE_FILE)
+    if(NOT DEFINED COSMICDESK_BINARY_DIR)
+        message(FATAL_ERROR
+                "COSMICDESK_BINARY_DIR must be set when running this file with -P")
+    endif()
+    _cosmicdesk_generate_version_files("${COSMICDESK_BINARY_DIR}")
+    return()
+endif()
+
+# Re-run CMake when HEAD moves. On a branch HEAD is a symref and only the ref
+# file it points at changes per commit; refs/tags catches `git tag` via the
+# directory mtime. None of this is load-bearing - a new loose ref does not
+# reliably bump the directory mtime on every filesystem - which is why
+# cosmicdesk_version re-derives at build time regardless.
+foreach(_cd_watch "${_cd_root}/.git/HEAD"
+                  "${_cd_root}/.git/packed-refs"
+                  "${_cd_root}/.git/refs/tags")
     if(EXISTS "${_cd_watch}")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_cd_watch}")
     endif()
@@ -103,13 +146,20 @@ if(EXISTS "${_cd_root}/.git/HEAD")
     endif()
 endif()
 
-# Emit the derived version into the build tree for the packaging scripts.
-# Call after project().
+# Emit the derived version into the build tree, and add the target that keeps
+# it honest. Call after project().
 function(cosmicdesk_write_version_files)
-    configure_file(${CMAKE_SOURCE_DIR}/packaging/version.env.in
-                   ${CMAKE_BINARY_DIR}/packaging/version.env @ONLY)
-    configure_file(${CMAKE_SOURCE_DIR}/packaging/windows/version.iss.in
-                   ${CMAKE_BINARY_DIR}/packaging/windows/version.iss @ONLY)
+    _cosmicdesk_generate_version_files("${CMAKE_BINARY_DIR}")
+    # ALL, so any `cmake --build` refreshes the files from live git state.
+    # Packaging always follows a build, so this is what actually guarantees the
+    # installer and the deb carry the version of the commit being packaged.
+    add_custom_target(cosmicdesk_version ALL
+        COMMAND ${CMAKE_COMMAND}
+                -DCOSMICDESK_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DCOSMICDESK_BINARY_DIR=${CMAKE_BINARY_DIR}
+                -P ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/CosmicDeskVersion.cmake
+        COMMENT "Refreshing the derived version from git"
+        VERBATIM)
     message(STATUS "Cosmic Desk version: ${COSMICDESK_VERSION_FULL} "
                    "(info ${COSMICDESK_VERSION_INFO}, deb ${COSMICDESK_VERSION_DEB})")
 endfunction()

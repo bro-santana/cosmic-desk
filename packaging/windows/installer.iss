@@ -21,10 +21,10 @@
 ; Produces dist\CosmicDesk-windows-x64-setup.exe.
 
 ; The version is NOT derived here. cmake/CosmicDeskVersion.cmake derives it
-; from `git describe` at configure time and writes the file included below, so
-; this installer and the Debian package can never disagree about the version.
-; Configure the build first (`cmake -B build`); a passed
-; /DAppVersion=... still overrides the derived value.
+; from `git describe` and writes the file included below, so this installer and
+; the Debian package can never disagree about the version. It is refreshed on
+; every build, so BUILD BEFORE PACKAGING - `git tag` changes what describe
+; reports, and only a build picks that up. A passed /DAppVersion= still wins.
 #include "..\..\build\packaging\windows\version.iss"
 
 #define AppName "Cosmic Desk"
@@ -52,6 +52,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; /CURRENTUSER on the command line; the service task is skipped in that mode.
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog commandline
+; Without this the Add/Remove Programs title defaults to AppVerName,
+; i.e. "Cosmic Desk version 1.2.3" - the version belongs in the Version
+; column (DisplayVersion), not baked into the product name.
+UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
 WizardStyle=modern
 LicenseFile=..\..\LICENSE
