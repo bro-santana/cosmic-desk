@@ -53,7 +53,10 @@ constexpr float kDeskEs = 1.03f;
 
 // Card box and content layout (handoff README "Machine cards").
 constexpr float kCardW = 256.0f;
-constexpr float kCardH = 164.0f;
+// Approximate card height, used only for the mouse-hover rectangles (the beam
+// and card hover tests). The card's actual height is measured from its content
+// in DrawMachineCard so the frame just fits the text/buttons.
+constexpr float kCardApproxH = 96.0f;
 constexpr float kCardPadX = 17.0f;
 constexpr float kCardPadTop = 15.0f;
 constexpr float kCardGap = 9.0f;
@@ -277,8 +280,43 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     BridgeAction action;
     // Warp (U5): cards scale up by 1 + 0.6*w around their center — the pos
     // below derives from the center, so the card stays centered while it grows.
-    const float w = kCardW * scale * (1.0f + 0.6f * in.warp) * scale_factor;
-    const float h = kCardH * scale * (1.0f + 0.6f * in.warp) * scale_factor;
+    const float frame = (1.0f + 0.6f * in.warp) * scale_factor;
+    const float w = kCardW * scale * frame;
+
+    // Measure the content so the frame just fits it: top/bottom padding match
+    // the side padding (kCardPadTop), with the divider, the address line and
+    // the action row (height = the tallest of the CONNECT/PAIR/edit/rename
+    // controls) in between.
+    float addr_h = 0.0f;
+    {
+        ImGui::PushFont(cosmic::ui::FontMonoRegular());
+        ImGui::SetWindowFontScale(12.0f / 13.0f);
+        addr_h = cosmic::ui::TextSpacedSize("192.168.1.42:47989", 0.06f).y;
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+    }
+    float row_h = 0.0f;
+    {
+        ImGui::PushFont(cosmic::ui::FontMonoBold());
+        ImGui::SetWindowFontScale(9.5f / 13.0f);
+        row_h = std::max(row_h, ImGui::CalcTextSize("CONNECT").y + 16.0f * scale);
+        row_h = std::max(row_h, ImGui::CalcTextSize("PAIR").y + 14.0f * scale);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+        row_h = std::max(row_h, kEditBtnSize * scale);
+        // Rename row (input + OK) is the tallest possible row.
+        ImGui::PushFont(cosmic::ui::FontMonoRegular());
+        ImGui::SetWindowFontScale(11.0f / 13.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(7.0f * scale, 5.0f * scale));
+        row_h = std::max(row_h, ImGui::GetFrameHeight());
+        ImGui::PopStyleVar();
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+    }
+    const float content_h = kCardPadTop * scale + 1.0f * scale + kCardGap * scale +
+                            addr_h + kCardGap * scale + row_h + kCardPadTop * scale;
+    const float h = content_h * frame;
     const ImVec2 pos(center.x - w * 0.5f, center.y - h * 0.5f);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
@@ -288,14 +326,18 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     // available in ImGui, so this is a cheap stepped shadow. Drawn on the
     // parent draw list before the child so it sits under the card content.
     const ImVec4 vignette = cosmic::ui::Rgba(kVignette);
-    draw_list->AddRectFilled(ImVec2(pos.x, pos.y + 14.0f * scale),
-                             ImVec2(pos.x + w, pos.y + h + 14.0f * scale),
+    // Outer shadow: larger, offset further down, softer.
+    draw_list->AddRectFilled(ImVec2(pos.x - 8.0f * scale, pos.y + 18.0f * scale),
+                             ImVec2(pos.x + w + 8.0f * scale,
+                                    pos.y + h + 26.0f * scale),
                              ImGui::GetColorU32(
-                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.55f)));
-    draw_list->AddRectFilled(ImVec2(pos.x, pos.y + 6.0f * scale),
-                             ImVec2(pos.x + w, pos.y + h + 6.0f * scale),
+                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.45f)));
+    // Inner shadow: tighter, stronger.
+    draw_list->AddRectFilled(ImVec2(pos.x - 3.0f * scale, pos.y + 7.0f * scale),
+                             ImVec2(pos.x + w + 3.0f * scale,
+                                    pos.y + h + 15.0f * scale),
                              ImGui::GetColorU32(
-                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.70f)));
+                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.65f)));
 
     // Card background (the child window itself is transparent).
     draw_list->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h),
@@ -327,7 +369,6 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     ImGui::PushFont(cosmic::ui::FontMonoRegular());
     ImGui::SetWindowFontScale(12.0f / 13.0f);
     const std::string addr_text = HostAddressLabel(host, in.port_base);
-    const float addr_h = cosmic::ui::TextSpacedSize(addr_text.c_str(), 0.06f).y;
     ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kCyan));
     ImGui::SetCursorScreenPos(ImVec2(content_x, divider_y + 1.0f * scale + kCardGap * scale));
     cosmic::ui::TextSpaced(addr_text.c_str(), 0.06f);
@@ -457,29 +498,61 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
                               host.nickname.c_str());
             }
             widget_hovered |= edit_hovered;
-            // Pencil (design px × scale), kMuted → kPurple on hover like the
-            // button's text: shaft from the bottom-left to the top-right, a V
-            // nib at the top-right end, and a short eraser cap perpendicular
-            // to the shaft at its back end.
+            // Pencil (✎ not in the atlas): a compact 45-degree pencil drawn as
+            // filled primitives — shaft parallelogram, triangular nib at the
+            // bottom-right end, metal ferrule and eraser block at the back.
+            // kMuted → kPurple on hover, mirroring the button's text. (ImVec2
+            // operators are disabled in this build, so all math is explicit.)
             const ImU32 pencil_col =
                 ImGui::GetColorU32(Rgba(edit_hovered ? kPurple : kMuted));
-            const float bx = edit_pos.x;
-            const float by = edit_pos.y;
-            const float ew = edit_size.x;
-            const float eh = edit_size.y;
+            const ImU32 ferrule_col = ImGui::GetColorU32(Rgba(kBorder));
+            const ImU32 eraser_col = ImGui::GetColorU32(Rgba(kTextDim));
             ImDrawList* card_list = ImGui::GetWindowDrawList();
-            card_list->AddLine(ImVec2(bx + 4.0f * scale, by + eh - 4.0f * scale),
-                               ImVec2(bx + ew - 8.0f * scale, by + 8.0f * scale),
-                               pencil_col, 3.0f * scale);
-            card_list->AddLine(ImVec2(bx + ew - 8.0f * scale, by + 8.0f * scale),
-                               ImVec2(bx + ew - 3.0f * scale, by + 3.0f * scale),
-                               pencil_col, 1.5f * scale);
-            card_list->AddLine(ImVec2(bx + ew - 8.0f * scale, by + 8.0f * scale),
-                               ImVec2(bx + ew - 4.0f * scale, by + 9.0f * scale),
-                               pencil_col, 1.5f * scale);
-            card_list->AddLine(ImVec2(bx + 4.0f * scale, by + eh - 4.0f * scale),
-                               ImVec2(bx + 7.5f * scale, by + eh - 0.5f * scale),
-                               pencil_col, 3.0f * scale);
+            const ImVec2 pc(edit_pos.x + edit_size.x * 0.5f,
+                            edit_pos.y + edit_size.y * 0.5f);
+            const ImVec2 ax(0.7071f, 0.7071f);   // 45-degree axis
+            const ImVec2 nm(-0.7071f, 0.7071f);  // perpendicular
+            const float half = 9.0f * scale;     // half length of the pencil
+            const float hw = 2.2f * scale;       // shaft half width
+            const auto mul = [](const ImVec2& v, float s) {
+                return ImVec2(v.x * s, v.y * s);
+            };
+            const auto add = [](const ImVec2& a, const ImVec2& b) {
+                return ImVec2(a.x + b.x, a.y + b.y);
+            };
+            const auto sub = [](const ImVec2& a, const ImVec2& b) {
+                return ImVec2(a.x - b.x, a.y - b.y);
+            };
+            const ImVec2 tip = add(pc, mul(ax, half));             // nib point
+            const ImVec2 back = sub(pc, mul(ax, half));            // eraser end
+            const ImVec2 s1 = sub(tip, mul(ax, 3.5f * scale));     // nib base
+            const ImVec2 s0 = add(back, mul(ax, 3.0f * scale));    // shaft back
+            // Shaft.
+            card_list->AddQuadFilled(add(s0, mul(nm, hw)), sub(s0, mul(nm, hw)),
+                                     sub(s1, mul(nm, hw)), add(s1, mul(nm, hw)),
+                                     pencil_col);
+            // Nib: triangle from the shaft front to the point.
+            card_list->AddTriangleFilled(add(s1, mul(nm, hw * 1.15f)),
+                                         sub(s1, mul(nm, hw * 1.15f)), tip,
+                                         pencil_col);
+            // Ferrule: a short, slightly wider metal band at the shaft back.
+            card_list->AddQuadFilled(add(s0, mul(nm, hw * 1.25f)),
+                                     sub(s0, mul(nm, hw * 1.25f)),
+                                     sub(add(back, mul(ax, 1.2f * scale)),
+                                         mul(nm, hw * 1.25f)),
+                                     add(add(back, mul(ax, 1.2f * scale)),
+                                         mul(nm, hw * 1.25f)),
+                                     ferrule_col);
+            // Eraser: small block at the very back, lighter tone.
+            card_list->AddQuadFilled(add(add(back, mul(ax, 1.2f * scale)),
+                                         mul(nm, hw * 1.35f)),
+                                     sub(add(back, mul(ax, 1.2f * scale)),
+                                         mul(nm, hw * 1.35f)),
+                                     sub(sub(back, mul(ax, 1.6f * scale)),
+                                         mul(nm, hw * 1.35f)),
+                                     add(sub(back, mul(ax, 1.6f * scale)),
+                                         mul(nm, hw * 1.35f)),
+                                     eraser_col);
         }
 
         // CONNECT (green) or PAIR (ghost).
@@ -932,7 +1005,7 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
                 const float hover_scale =
                     scale_it != state->card_scale.end() ? scale_it->second : 1.0f;
                 const float cw = kCardW * scale * (1.0f + 0.6f * in.warp) * hover_scale;
-                const float ch = kCardH * scale * (1.0f + 0.6f * in.warp) * hover_scale;
+                const float ch = kCardApproxH * scale * (1.0f + 0.6f * in.warp) * hover_scale;
                 const bool hovered = ImGui::IsMouseHoveringRect(
                     ImVec2(center.x - cw * 0.5f, center.y - ch * 0.5f),
                     ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
@@ -993,7 +1066,7 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
             }
             float& cur = scale_it->second;
             const float cw = kCardW * scale * (1.0f + 0.6f * in.warp) * cur;
-            const float ch = kCardH * scale * (1.0f + 0.6f * in.warp) * cur;
+            const float ch = kCardApproxH * scale * (1.0f + 0.6f * in.warp) * cur;
             const bool hovered = ImGui::IsMouseHoveringRect(
                 ImVec2(center.x - cw * 0.5f, center.y - ch * 0.5f),
                 ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);

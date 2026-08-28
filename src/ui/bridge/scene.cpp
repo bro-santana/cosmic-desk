@@ -66,16 +66,21 @@ struct NebulaSway {
 
 // The 8 nebula bands' sway specs, in band order (sway index 0..7). Periods
 // stagger 9.6s..20.8s and delays -2.1s..-16.8s so the bands never move in
-// lockstep; the translate/rotate/scale keyframes are the prototype's k1..k8.
+// lockstep; the rotate/scale keyframes are the prototype's k1..k8. The
+// TRANSLATE keyframes are the prototype's values scaled to 30%: the design
+// moves the bands inside a fixed clip mask (its clip-paths cannot be applied
+// per-frame by SDL), and the full +-12..26px excursions would open visible
+// seams and overlaps between the band silhouettes. 30% keeps the breathing
+// motion without tearing the nebula apart.
 constexpr NebulaSway kNebulaSway[8] = {
-    {9.6f,  -2.1f,  19.0f, -17.0f,  0.37f, 1.008f, 1.0f,  -13.3f, 10.2f, 0.0f, 1.0f, 1.008f,  9.5f, 17.0f, -0.37f, 1.0f, 1.0f, 52.4059f, 38.9583f},
-    {11.2f, -4.2f,  26.0f,  -7.0f,  0.49f, 1.0f,   1.0f,  -18.2f,  4.2f, 0.0f, 1.0f, 1.0f,   13.0f,  7.0f, -0.49f, 1.0f, 1.0f, 52.5910f, 41.7917f},
-    {12.8f, -6.3f,  12.0f, -12.0f,  0.61f, 1.008f, 1.0f,   -8.4f,  7.2f, 0.0f, 1.0f, 1.008f,  6.0f, 12.0f, -0.61f, 1.0f, 1.0f, 50.8637f, 39.2500f},
-    {14.4f, -8.4f,  19.0f, -17.0f,  0.25f, 1.0f,   1.0f,  -13.3f, 10.2f, 0.0f, 1.0f, 1.0f,    9.5f, 17.0f, -0.25f, 1.0f, 1.0f, 48.3035f, 38.9583f},
-    {16.0f, -10.5f, 26.0f,  -7.0f,  0.37f, 1.008f, 1.0f,  -18.2f,  4.2f, 0.0f, 1.0f, 1.008f, 13.0f,  7.0f, -0.37f, 1.0f, 1.0f, 45.6817f, 38.9583f},
-    {17.6f, -12.6f, 12.0f, -12.0f,  0.49f, 1.0f,   1.0f,   -8.4f,  7.2f, 0.0f, 1.0f, 1.0f,    6.0f, 12.0f, -0.49f, 1.0f, 1.0f, 43.0907f, 33.5000f},
-    {19.2f, -14.7f, 19.0f, -17.0f,  0.61f, 1.008f, 1.0f,  -13.3f, 10.2f, 0.0f, 1.0f, 1.008f,  9.5f, 17.0f, -0.61f, 1.0f, 1.0f, 40.4997f, 31.1250f},
-    {20.8f, -16.8f, 26.0f,  -7.0f,  0.25f, 1.0f,   1.0f,  -18.2f,  4.2f, 0.0f, 1.0f, 1.0f,   13.0f,  7.0f, -0.25f, 1.0f, 1.0f, 41.2091f, 21.2500f},
+    {9.6f,  -2.1f,   5.7f, -5.1f,  0.37f, 1.008f, 1.0f,  -4.0f,  3.1f, 0.0f, 1.0f, 1.008f,  2.9f,  5.1f, -0.37f, 1.0f, 1.0f, 52.4059f, 38.9583f},
+    {11.2f, -4.2f,   7.8f, -2.1f,  0.49f, 1.0f,   1.0f,  -5.5f,  1.3f, 0.0f, 1.0f, 1.0f,    3.9f,  2.1f, -0.49f, 1.0f, 1.0f, 52.5910f, 41.7917f},
+    {12.8f, -6.3f,   3.6f, -3.6f,  0.61f, 1.008f, 1.0f,  -2.5f,  2.2f, 0.0f, 1.0f, 1.008f,  1.8f,  3.6f, -0.61f, 1.0f, 1.0f, 50.8637f, 39.2500f},
+    {14.4f, -8.4f,   5.7f, -5.1f,  0.25f, 1.0f,   1.0f,  -4.0f,  3.1f, 0.0f, 1.0f, 1.0f,    2.9f,  5.1f, -0.25f, 1.0f, 1.0f, 48.3035f, 38.9583f},
+    {16.0f, -10.5f,  7.8f, -2.1f,  0.37f, 1.008f, 1.0f,  -5.5f,  1.3f, 0.0f, 1.0f, 1.008f,  3.9f,  2.1f, -0.37f, 1.0f, 1.0f, 45.6817f, 38.9583f},
+    {17.6f, -12.6f,  3.6f, -3.6f,  0.49f, 1.0f,   1.0f,  -2.5f,  2.2f, 0.0f, 1.0f, 1.0f,    1.8f,  3.6f, -0.49f, 1.0f, 1.0f, 43.0907f, 33.5000f},
+    {19.2f, -14.7f,  5.7f, -5.1f,  0.61f, 1.008f, 1.0f,  -4.0f,  3.1f, 0.0f, 1.0f, 1.008f,  2.9f,  5.1f, -0.61f, 1.0f, 1.0f, 40.4997f, 31.1250f},
+    {20.8f, -16.8f,  7.8f, -2.1f,  0.25f, 1.0f,   1.0f,  -5.5f,  1.3f, 0.0f, 1.0f, 1.0f,    3.9f,  2.1f, -0.25f, 1.0f, 1.0f, 41.2091f, 21.2500f},
 };
 
 // Draw order = array order (back -> front). Values from the handoff README
@@ -1123,9 +1128,13 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             float tx, ty, rot, sx, sy;
             SampleSway(s, in.time_s, tx, ty, rot, sx, sy);
 
-            // Band center on screen.
-            const float Px = dest0.x + s.fx * dest0.w;
-            const float Py = dest0.y + s.fy * dest0.h;
+            // Band center on screen. s.fx/s.fy are stored as canvas PERCENT
+            // (52.4 = 52.4%), so divide by 100 to get a 0..1 fraction of the
+            // art-box dest rect.
+            const float fx = s.fx * 0.01f;
+            const float fy = s.fy * 0.01f;
+            const float Px = dest0.x + fx * dest0.w;
+            const float Py = dest0.y + fy * dest0.h;
 
             // Translate by the sway (design px x scale; rot/scale unscaled).
             const float tox = tx * scale;
@@ -1146,7 +1155,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             // P1 sits at (fx*dest0.w, fy*dest0.h) inside dest1, and scaling
             // about P1 moves dest2's top-left by (1-sx)*(P1-dest1), so the
             // center lands at (sx*fx*dest0.w, sy*fy*dest0.h).
-            const SDL_FPoint center{sx * s.fx * dest0.w, sy * s.fy * dest0.h};
+            const SDL_FPoint center{sx * fx * dest0.w, sy * fy * dest0.h};
             SDL_RenderCopyExF(renderer, tex, nullptr, &dest2, rot, &center,
                               SDL_FLIP_NONE);
         } else {
