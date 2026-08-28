@@ -10,6 +10,8 @@
 #include "app/state.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
+#include "ui/bridge/design.h"
+#include "ui/bridge/scene.h"
 #include "ui/host_list.h"
 #include "ui/pin_dialog.h"
 #include "ui/scale.h"
@@ -43,8 +45,10 @@
 
 namespace {
 
-constexpr int kWindowWidth = 1000;
-constexpr int kWindowHeight = 640;
+// Default window size: 16:9-ish to match the Bridge UI's design canvas
+// (docs/UI_MIGRATION.md U0).
+constexpr int kWindowWidth = 1280;
+constexpr int kWindowHeight = 720;
 
 // The vendored host resolves SUNSHINE_ASSETS_DIR="assets" (HLSL/GL shaders)
 // relative to the CWD, and autostart/menu launches don't set it; chdir makes
@@ -327,6 +331,9 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
+    // U0 scene; draws behind the UI in MainWindow mode.
+    cosmic::ui::scene::init(renderer);
+
     // HiDPI (see ui/scale.h): the DPI-awareness hint above gives us the raw
     // pixel grid, so ImGui has to be told the display scale or everything it
     // draws comes out at 96-DPI sizes on a 4K panel. Must follow the backend
@@ -353,6 +360,10 @@ int main(int argc, char** argv) {
         }
         SDL_SetWindowSize(window, width, height);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        // The Bridge layout needs room; the classic overlay window also needs
+        // ~680x460.
+        SDL_SetWindowMinimumSize(window, static_cast<int>(960 * ui_scale),
+                                 static_cast<int>(540 * ui_scale));
     }
 
     cosmic::Settings settings = cosmic::Settings::load();
@@ -835,8 +846,26 @@ int main(int argc, char** argv) {
         cosmic::ui::draw_settings_window(settings, show_settings);
 
         ImGui::Render();
-        SDL_SetRenderDrawColor(renderer, 26, 28, 55, 255);  // #1a1c37 main_bg
+        // Clear to the design's deep indigo (#101226) and draw the parallax
+        // scene underneath the ImGui UI (docs/UI_MIGRATION.md U0). The scene
+        // draws in renderer-output pixels; out_w/out_h are in the same space
+        // the ImGui viewport uses (per-monitor-v2 DPI awareness).
+        const SDL_Color clear_color = cosmic::ui::SdlColor(cosmic::ui::kBg);
+        SDL_SetRenderDrawColor(renderer, clear_color.r, clear_color.g,
+                               clear_color.b, clear_color.a);
         SDL_RenderClear(renderer);
+        int out_w = 0;
+        int out_h = 0;
+        SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
+        if (out_w > 0 && out_h > 0) {
+            cosmic::ui::scene::SceneInput scene_input;
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            scene_input.mouse_x = mouse.x;
+            scene_input.mouse_y = mouse.y;
+            scene_input.time_s = static_cast<float>(SDL_GetTicks64()) / 1000.0f;
+            scene_input.motion = 1.0f;
+            cosmic::ui::scene::draw(renderer, out_w, out_h, scene_input);
+        }
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
 
@@ -895,6 +924,8 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
     cosmic::viewer::vrenderer_deinit();
+    // Tear down the scene's layer textures before the renderer goes away.
+    cosmic::ui::scene::shutdown(renderer);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     cosmic::hostglue::stop();

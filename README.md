@@ -103,6 +103,8 @@ Modifications to vendored files are marked inline with `COSMIC MODIFICATION` com
 | [nvapi](https://github.com/NVIDIA/nvapi) | MIT | NVIDIA NVAPI headers used by the vendored `nvprefs` code |
 | [glad](https://github.com/Dav1dde/glad) | MIT | GL/EGL loader generator used by the Linux VAAPI build |
 | [inputtino](https://github.com/games-on-whales/inputtino) | MIT | Linux uinput input injection (host) |
+| [lunasvg](https://github.com/sammycage/lunasvg) | MIT | Runtime SVG rasterizer for the Bridge UI parallax layers |
+| [IBM Plex](https://github.com/IBM/plex) | SIL OFL 1.1 | UI fonts (Mono + Sans) bundled in `assets/fonts/` |
 | Sunshine DXGI HLSL capture shaders ([Sunshine](https://github.com/LizardByte/Sunshine)) | GPL-3.0 | Windows capture shaders in `assets/shaders/` |
 
 Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-3.0** —

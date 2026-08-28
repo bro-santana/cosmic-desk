@@ -26,6 +26,10 @@ find_package(nlohmann_json REQUIRED)
 
 add_subdirectory(third-party/imgui)
 
+# UI migration (docs/UI_MIGRATION.md U0): lunasvg rasterizes the parallax layer
+# SVGs into SDL textures at runtime. Self-contained (bundles plutovg), MIT.
+add_subdirectory(third-party/lunasvg)
+
 # ---------------------------------------------------------------------------
 # cosmic_host: vendored stripped Sunshine host as a static library (M1).
 # ---------------------------------------------------------------------------
@@ -102,6 +106,9 @@ add_executable(cosmicdesk
     src/ui/theme.cpp
     src/ui/tray.cpp
     src/ui/viewer_topbar.cpp
+    src/ui/fonts.cpp
+    src/ui/bridge/scene.cpp
+    src/ui/bridge/text.cpp
     src/viewer/session.cpp
     src/viewer/decoder.cpp
     src/viewer/vrenderer.cpp
@@ -148,6 +155,7 @@ target_link_libraries(cosmicdesk PRIVATE
     cosmic_libgamestream
     cosmic_host
     cosmic_imgui
+    lunasvg::lunasvg
     nlohmann_json::nlohmann_json
     SDL2::SDL2
 )
