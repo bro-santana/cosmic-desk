@@ -73,7 +73,12 @@ void WorkerLoop() {
                 if (!g_running.load(std::memory_order_relaxed)) {
                     break;
                 }
-                const std::string url = "http://" + address + ":" + std::to_string(port) +
+                // IPv6 literals must be bracketed in a URL; IPv4/hostnames are
+                // not. A user-supplied bracketed form is kept as-is.
+                const bool ipv6 = address.find(':') != std::string::npos &&
+                                  address.front() != '[';
+                const std::string host = ipv6 ? "[" + address + "]" : address;
+                const std::string url = "http://" + host + ":" + std::to_string(port) +
                                         "/serverinfo";
                 curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
                 const CURLcode res = curl_easy_perform(curl);

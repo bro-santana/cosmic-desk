@@ -57,6 +57,7 @@ constexpr float kCardH = 164.0f;
 constexpr float kCardPadX = 17.0f;
 constexpr float kCardPadTop = 15.0f;
 constexpr float kCardGap = 9.0f;
+constexpr float kEditBtnSize = 30.0f;  // rename (✎) ghost button, design px
 
 // Card depth (parallax weight) and float-bob period cycle by index (i % 3).
 constexpr float kCardDepths[] = {88.0f, 102.0f, 94.0f};
@@ -75,6 +76,17 @@ constexpr uint32_t kEmptyBorder = 0x8AC49C8C;        // rgba(138,196,156,.55)
 constexpr uint32_t kPurpleBorder = 0xB897D380;       // rgba(184,151,211,.5)
 constexpr uint32_t kDockPairBg = 0x6A74BBE6;         // rgba(106,116,187,.9)
 constexpr uint32_t kDockPairHover = 0x8E6DB8F2;      // rgba(142,109,184,.95)
+
+// Tether beams (handoff README "Tether beams"): dashed lines from each card
+// center to the monitor beacon point. Alphas are 0.18/0.55/0.9 * 255; dash
+// sizes and the drift rates are design px (×scale at draw time).
+constexpr float kBeamIdleAlpha = 46.0f;    // 0.18 * 255
+constexpr float kBeamHoverAlpha = 140.0f;  // 0.55 * 255
+constexpr float kBeamDockAlpha = 230.0f;   // 0.9 * 255
+constexpr float kBeamDashOn = 3.0f;        // dash length, design px
+constexpr float kBeamDashGap = 7.0f;       // gap length, design px
+constexpr float kBeamDriftS = -8.0f;       // idle dash drift, design px/s
+constexpr float kBeamDockDriftS = -60.0f;  // docking dash drift, design px/s
 
 // Truncates `text` to fit within `max_width` device px at the current font and
 // tracking, appending ".." when truncated. Call with the target font pushed.
@@ -172,6 +184,41 @@ bool DrawButton(const char* id, const char* label, float tracking_em,
     return clicked;
 }
 
+// Draws a dashed line from `a` to `b` on `dl`, walking the segment in ~2
+// device-px steps and emitting one AddLine per dash. Dash sizes, width and
+// dash_offset are in device px (callers multiply design px by ui::scale()); a
+// point is "on" when (arc_length + dash_offset) mod (dash_on + dash_gap) is
+// inside the on-window. The scene's SDL dashed-line helper is the reference;
+// this is the ImGui draw-list equivalent (different renderer, so not shared).
+void DrawDashedLineImGui(ImDrawList* dl, const ImVec2& a, const ImVec2& b,
+                         ImU32 color, float width, float dash_on, float dash_gap,
+                         float dash_offset) {
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float total = std::hypot(dx, dy);
+    if (total <= 0.0f) {
+        return;
+    }
+    const float period = dash_on + dash_gap;
+    if (period <= 0.0f) {
+        return;
+    }
+    const int steps = std::max(1, static_cast<int>(std::ceil(total / 2.0f)));
+    ImVec2 prev = a;
+    for (int i = 1; i <= steps; ++i) {
+        const float t = static_cast<float>(i) / steps;
+        const ImVec2 p(a.x + dx * t, a.y + dy * t);
+        float phase = std::fmod(total * t + dash_offset, period);
+        if (phase < 0.0f) {
+            phase += period;
+        }
+        if (phase < dash_on) {
+            dl->AddLine(prev, p, color, width);
+        }
+        prev = p;
+    }
+}
+
 // Orbit position for card `index` (design: cards spread around the upper arc
 // of the ring, gently swaying; see handoff README "Machine cards").
 ImVec2 CardOrbitCenter(const BridgeInput& in, const cosmic::ui::scene::CursorSmooth& cursor,
@@ -217,17 +264,38 @@ ImVec2 CardOrbitCenter(const BridgeInput& in, const cosmic::ui::scene::CursorSmo
 // Draws one machine card centered at `center` (device px). The card is a child
 // window pinned to the host's address so a rename never changes its ID; the
 // frame (bg + border + border-tab title) is drawn manually so the tab can
-// straddle the top border. Returns any action the card produced.
+// straddle the top border. `hovered` comes from draw_bridge (IsMouseHoveringRect
+// over the card rect) so the tether beams and the card share one hover state.
+// `scale_factor` (polish pass 2) is the eased hover scale: the FRAME (w/h,
+// border, halo, title tabs) grows around the center, while the fixed-size
+// buttons and typography stay put — ImGui text cannot scale, so the growth
+// reads as breathing room. Returns any action the card produced.
 BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
                              const SavedHost& host, int index,
-                             const ImVec2& center, float scale, int64_t now_unix) {
+                             const ImVec2& center, float scale, int64_t now_unix,
+                             bool hovered, float scale_factor) {
     BridgeAction action;
     // Warp (U5): cards scale up by 1 + 0.6*w around their center — the pos
     // below derives from the center, so the card stays centered while it grows.
-    const float w = kCardW * scale * (1.0f + 0.6f * in.warp);
-    const float h = kCardH * scale * (1.0f + 0.6f * in.warp);
+    const float w = kCardW * scale * (1.0f + 0.6f * in.warp) * scale_factor;
+    const float h = kCardH * scale * (1.0f + 0.6f * in.warp) * scale_factor;
     const ImVec2 pos(center.x - w * 0.5f, center.y - h * 0.5f);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    // Card drop-shadow halo (polish pass 2): two stacked dark rects offset
+    // below the card, approximating the design's drop-shadow(0 0 22px
+    // rgba(6,8,20,.9)) + drop-shadow(0 14px 34px rgba(6,8,20,.7)). No blur is
+    // available in ImGui, so this is a cheap stepped shadow. Drawn on the
+    // parent draw list before the child so it sits under the card content.
+    const ImVec4 vignette = cosmic::ui::Rgba(kVignette);
+    draw_list->AddRectFilled(ImVec2(pos.x, pos.y + 14.0f * scale),
+                             ImVec2(pos.x + w, pos.y + h + 14.0f * scale),
+                             ImGui::GetColorU32(
+                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.55f)));
+    draw_list->AddRectFilled(ImVec2(pos.x, pos.y + 6.0f * scale),
+                             ImVec2(pos.x + w, pos.y + h + 6.0f * scale),
+                             ImGui::GetColorU32(
+                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.70f)));
 
     // Card background (the child window itself is transparent).
     draw_list->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h),
@@ -241,10 +309,9 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // Border: cyan-ish on hover, purple when selected, dim otherwise. Computed
-    // here (hover state), but DRAWN after the child below: inside the child
-    // the draw-list clip is inset by the window padding, so the perimeter
-    // would be clipped away.
-    const bool hovered = ImGui::IsWindowHovered();
+    // from the draw_bridge hover state, but DRAWN after the child below: inside
+    // the child the draw-list clip is inset by the window padding, so the
+    // perimeter would be clipped away.
     const uint32_t border = hovered ? kCardBorderHover
                             : (state->selected == host.address ? kCardBorderSelected : kBorderDim);
 
@@ -351,9 +418,7 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
 
         ImGui::PushFont(cosmic::ui::FontMonoRegular());
         ImGui::SetWindowFontScale(10.0f / 13.0f);
-        const ImVec2 edit_label_size = ImGui::CalcTextSize("EDIT");
-        const ImVec2 edit_size(edit_label_size.x + 18.0f * scale,
-                               edit_label_size.y + 14.0f * scale);
+        const ImVec2 edit_size(kEditBtnSize * scale, kEditBtnSize * scale);
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopFont();
 
@@ -378,12 +443,13 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopFont();
 
-        // Rename (ghost) button — only for paired cards.
+        // Rename (ghost) button — only for paired cards. The ✎ glyph is not in
+        // the font atlas, so the button carries an empty label and the pencil
+        // is drawn as ImDrawList primitives over the button rect.
         if (host.paired) {
-            ImGui::PushFont(cosmic::ui::FontMonoRegular());
-            ImGui::SetWindowFontScale(10.0f / 13.0f);
             bool edit_hovered = false;
-            if (DrawButton("##edit", "EDIT", 0.0f, ImVec2(edit_x, row_y), edit_size,
+            const ImVec2 edit_pos(edit_x, row_y);
+            if (DrawButton("##edit", "", 0.0f, edit_pos, edit_size,
                            0, 0, kBorder, kPurple, kMuted, kText, scale,
                            &edit_hovered)) {
                 state->renaming = host.address;
@@ -391,8 +457,29 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
                               host.nickname.c_str());
             }
             widget_hovered |= edit_hovered;
-            ImGui::SetWindowFontScale(1.0f);
-            ImGui::PopFont();
+            // Pencil (design px × scale), kMuted → kPurple on hover like the
+            // button's text: shaft from the bottom-left to the top-right, a V
+            // nib at the top-right end, and a short eraser cap perpendicular
+            // to the shaft at its back end.
+            const ImU32 pencil_col =
+                ImGui::GetColorU32(Rgba(edit_hovered ? kPurple : kMuted));
+            const float bx = edit_pos.x;
+            const float by = edit_pos.y;
+            const float ew = edit_size.x;
+            const float eh = edit_size.y;
+            ImDrawList* card_list = ImGui::GetWindowDrawList();
+            card_list->AddLine(ImVec2(bx + 4.0f * scale, by + eh - 4.0f * scale),
+                               ImVec2(bx + ew - 8.0f * scale, by + 8.0f * scale),
+                               pencil_col, 3.0f * scale);
+            card_list->AddLine(ImVec2(bx + ew - 8.0f * scale, by + 8.0f * scale),
+                               ImVec2(bx + ew - 3.0f * scale, by + 3.0f * scale),
+                               pencil_col, 1.5f * scale);
+            card_list->AddLine(ImVec2(bx + ew - 8.0f * scale, by + 8.0f * scale),
+                               ImVec2(bx + ew - 4.0f * scale, by + 9.0f * scale),
+                               pencil_col, 1.5f * scale);
+            card_list->AddLine(ImVec2(bx + 4.0f * scale, by + eh - 4.0f * scale),
+                               ImVec2(bx + 7.5f * scale, by + eh - 0.5f * scale),
+                               pencil_col, 3.0f * scale);
         }
 
         // CONNECT (green) or PAIR (ghost).
@@ -823,13 +910,109 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
         // Empty state: a single beacon card at 8%/30% when there are no hosts.
         result.action = DrawEmptyCard(in, state, vp_size, scale);
     } else {
+        // Tether beams (handoff README "Tether beams"): dashed lines from each
+        // card center to the monitor beacon point, drawn before the cards so
+        // the cards sit on top. Skipped while warping (the cards fly out).
+        if (in.warp <= 0.02f) {
+            // Target: 53.1%/41.4% of the desk layer rect. The screen rect is
+            // 38.86/29.57/28.56/23.66% of the art box, so the target sits at
+            // ((0.531-0.3886)/0.2856, (0.414-0.2957)/0.2366) of the screen
+            // rect's size.
+            const ImVec2 beam_target(
+                scr.x + ((0.531f - 0.3886f) / 0.2856f) * scr.w,
+                scr.y + ((0.414f - 0.2957f) / 0.2366f) * scr.h);
+            for (size_t i = 0; i < in.hosts.size(); ++i) {
+                const ImVec2 center =
+                    CardOrbitCenter(in, cursor, static_cast<int>(i), vp_size, scale);
+                const SavedHost& host = in.hosts[i];
+                // Hover: the card rect (center ± half the warped + scaled
+                // size) — the same pre-ease scale the card loop uses, so the
+                // beam and the card share one hover state.
+                const auto scale_it = state->card_scale.find(host.address);
+                const float hover_scale =
+                    scale_it != state->card_scale.end() ? scale_it->second : 1.0f;
+                const float cw = kCardW * scale * (1.0f + 0.6f * in.warp) * hover_scale;
+                const float ch = kCardH * scale * (1.0f + 0.6f * in.warp) * hover_scale;
+                const bool hovered = ImGui::IsMouseHoveringRect(
+                    ImVec2(center.x - cw * 0.5f, center.y - ch * 0.5f),
+                    ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
+                // Idle: kBeam at 18% alpha, 1 px, dash drifting −8 px/s.
+                // Hovered: 55% alpha, 1.6 px. Docking: kBeamGreen at 90%,
+                // dash drifting −60 px/s.
+                const bool docking = in.connecting_address == host.address;
+                uint32_t beam_token = kBeam;
+                float beam_alpha = kBeamIdleAlpha;
+                float beam_width = 1.0f * scale;
+                float beam_drift = kBeamDriftS;
+                if (docking) {
+                    beam_token = kBeamGreen;
+                    beam_alpha = kBeamDockAlpha;
+                    beam_drift = kBeamDockDriftS;
+                } else if (hovered) {
+                    beam_alpha = kBeamHoverAlpha;
+                    beam_width = 1.6f * scale;
+                }
+                const ImVec4 beam_rgba = cosmic::ui::Rgba(beam_token);
+                const ImU32 beam_col = ImGui::GetColorU32(
+                    ImVec4(beam_rgba.x, beam_rgba.y, beam_rgba.z, beam_alpha / 255.0f));
+                DrawDashedLineImGui(draw_list, center, beam_target, beam_col,
+                                    beam_width, kBeamDashOn * scale,
+                                    kBeamDashGap * scale,
+                                    beam_drift * in.time_s * scale);
+            }
+        }
         // Machine cards orbit the scene center on a tilted ellipse.
+        // Hover scale (polish pass 2): each card eases toward 1.08 while
+        // hovered — the design's 1.1 is too much for the fixed text layout;
+        // 1.08 is the readable approximation. The springy overshoot of the
+        // design's cubic-bezier(.2,1.6,.4,1) is approximated by a fast
+        // exponential ease (k per frame from the frame dt).
+        const double now_s = in.time_s;
+        // dt for the ease; the -1.0 sentinel marks the first frame, which is
+        // treated as a 1/60 s step (the clamp formula would otherwise read the
+        // sentinel as a huge gap and clamp to 0.1).
+        double dt;
+        if (state->last_scale_time_s < 0.0) {
+            dt = 1.0 / 60.0;
+        } else {
+            dt = std::clamp(now_s - state->last_scale_time_s, 0.0, 0.1);
+        }
+        state->last_scale_time_s = now_s;
+        const float k = 1.0f - static_cast<float>(std::pow(1.0 - 0.22, dt * 60.0));
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
         for (size_t i = 0; i < in.hosts.size(); ++i) {
             const ImVec2 center =
                 CardOrbitCenter(in, cursor, static_cast<int>(i), vp_size, scale);
+            const SavedHost& host = in.hosts[i];
+            // Current eased scale for this card (missing = 1.0). The hover
+            // test uses this pre-ease scale so the rect matches the drawn card
+            // (one frame of lag is imperceptible at this ease rate).
+            auto scale_it = state->card_scale.find(host.address);
+            if (scale_it == state->card_scale.end()) {
+                scale_it = state->card_scale.emplace(host.address, 1.0f).first;
+            }
+            float& cur = scale_it->second;
+            const float cw = kCardW * scale * (1.0f + 0.6f * in.warp) * cur;
+            const float ch = kCardH * scale * (1.0f + 0.6f * in.warp) * cur;
+            const bool hovered = ImGui::IsMouseHoveringRect(
+                ImVec2(center.x - cw * 0.5f, center.y - ch * 0.5f),
+                ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
+            cur += ((hovered ? 1.08f : 1.0f) - cur) * k;
+            const float scale_factor = cur;
+
+            // Depth-of-field far-card fade (polish pass 2): cards far from the
+            // cursor dim toward the design's brightness falloff. Blur itself is
+            // not possible in ImGui, so it is approximated with opacity.
+            const float dist = std::hypot(mouse.x - center.x, mouse.y - center.y);
+            const float dist_px = std::isfinite(dist) ? dist / scale : 0.0f;
+            const float blur = std::min(
+                1.4f, std::max(0.0f, (dist_px - 240.0f) / 500.0f) * 1.4f);
+            const float fade = 1.0f - 0.30f * (blur / 1.4f);
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
             const BridgeAction card_action =
-                DrawMachineCard(in, state, in.hosts[i], static_cast<int>(i), center,
-                                scale, now_unix);
+                DrawMachineCard(in, state, host, static_cast<int>(i), center,
+                                scale, now_unix, hovered, scale_factor);
+            ImGui::PopStyleVar();
             if (result.action.kind == BridgeAction::None) {
                 result.action = card_action;
             }

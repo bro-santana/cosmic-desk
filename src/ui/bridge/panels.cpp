@@ -112,16 +112,22 @@ float EaseOutCubic(float p) {
 // InvisibleButton hit test. Colors are ImU32 (GetColorU32(Rgba(token)) results,
 // so callers can alpha-mod a token); a zero alpha skips the fill/border.
 // Mirrors bridge.cpp's file-local DrawButton — panels.cpp keeps its own copy
-// rather than promoting the helper.
+// rather than promoting the helper. `hovered_out` (when given) receives the
+// InvisibleButton's hover state so callers can draw glyph primitives in the
+// right color.
 bool DrawButton(const char* id, const char* label, float tracking_em,
                 const ImVec2& pos, const ImVec2& size, ImU32 bg,
                 ImU32 bg_hover, ImU32 border, ImU32 border_hover,
-                ImU32 text, ImU32 text_hover, float scale) {
+                ImU32 text, ImU32 text_hover, float scale,
+                bool* hovered_out = nullptr) {
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ImGui::SetCursorScreenPos(pos);
     ImGui::InvisibleButton(id, size);
     const bool hovered = ImGui::IsItemHovered();
     const bool clicked = ImGui::IsItemClicked();
+    if (hovered_out != nullptr) {
+        *hovered_out = hovered;
+    }
     const ImU32 bg_col = hovered ? bg_hover : bg;
     const ImU32 border_col = hovered ? border_hover : border;
     const ImU32 text_col = hovered ? text_hover : text;
@@ -409,19 +415,32 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
 
-    // X close (26 px square ghost, ASCII "X"), top-right in the padding band.
-    ImGui::PushFont(cosmic::ui::FontMonoRegular());
-    ImGui::SetWindowFontScale(13.0f / 13.0f);
+    // X close (26 px square ghost), top-right in the padding band. The ✕ glyph
+    // is not in the atlas, so the label is empty and two crossed lines are
+    // drawn over the button rect instead.
     const float close_size = kCloseSize * scale;
     const ImVec2 close_pos(pos.x + w - 12.0f * scale - close_size, pos.y + 4.0f * scale);
-    if (DrawButton("##settings_close", "X", 0.0f, close_pos,
+    bool close_hovered = false;
+    if (DrawButton("##settings_close", "", 0.0f, close_pos,
                    ImVec2(close_size, close_size), 0, 0,
                    ImGui::GetColorU32(Rgba(kBorder)), ImGui::GetColorU32(Rgba(kPurple)),
-                   ImGui::GetColorU32(Rgba(kMuted)), ImGui::GetColorU32(Rgba(kText)), scale)) {
+                   ImGui::GetColorU32(Rgba(kMuted)), ImGui::GetColorU32(Rgba(kText)), scale,
+                   &close_hovered)) {
         out_action->kind = BridgeAction::CloseSettings;
     }
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::PopFont();
+    // Cross: the diagonals of the button's inner rect (6 px inset), kMuted →
+    // kText on hover like the old "X" label.
+    const float cross_inset = 6.0f * scale;
+    const ImU32 cross_col = ImGui::GetColorU32(Rgba(close_hovered ? kText : kMuted));
+    child_list->AddLine(ImVec2(close_pos.x + cross_inset, close_pos.y + cross_inset),
+                        ImVec2(close_pos.x + close_size - cross_inset,
+                               close_pos.y + close_size - cross_inset),
+                        cross_col, 1.5f * scale);
+    child_list->AddLine(ImVec2(close_pos.x + close_size - cross_inset,
+                               close_pos.y + cross_inset),
+                        ImVec2(close_pos.x + cross_inset,
+                               close_pos.y + close_size - cross_inset),
+                        cross_col, 1.5f * scale);
 
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -506,7 +525,7 @@ void draw_pair_modal(const BridgeInput& in, BridgeState* state, BridgeAction* ou
     ImGui::PushFont(cosmic::ui::FontMonoRegular());
     ImGui::SetWindowFontScale(11.0f / 13.0f);
     const float handshake_h =
-        cosmic::ui::TextSpacedSize("* HANDSHAKE IN TRANSIT - PIN IS ON THE MONITOR", 0.14f).y;
+        cosmic::ui::TextSpacedSize("HANDSHAKE IN TRANSIT - PIN IS ON THE MONITOR", 0.14f).y;
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
 
@@ -782,13 +801,26 @@ void draw_pair_modal(const BridgeInput& in, BridgeState* state, BridgeAction* ou
                             ImGui::GetColorU32(Rgba(kBorderDim)), 1.0f * scale);
         y += gap;
         if (pairing) {
-            // Handshake line (mono 11, .14em, kGreen). The ◈/— glyphs are not
-            // in the atlas, so ASCII.
+            // Handshake line (mono 11, .14em, kGreen). The ◈ glyph is not in
+            // the atlas, so a small drawn diamond precedes the text.
             ImGui::PushFont(cosmic::ui::FontMonoRegular());
             ImGui::SetWindowFontScale(11.0f / 13.0f);
+            const ImVec2 handshake_size = cosmic::ui::TextSpacedSize(
+                "HANDSHAKE IN TRANSIT - PIN IS ON THE MONITOR", 0.14f);
+            // Diamond: ~8x8 design px, at the line's start, vertically
+            // centered on the text line.
+            const float diamond_half = 4.0f * scale;
+            const ImVec2 diamond_c(content_x + diamond_half,
+                                   y + handshake_size.y * 0.5f);
+            child_list->AddQuadFilled(
+                ImVec2(diamond_c.x, diamond_c.y - diamond_half),
+                ImVec2(diamond_c.x + diamond_half, diamond_c.y),
+                ImVec2(diamond_c.x, diamond_c.y + diamond_half),
+                ImVec2(diamond_c.x - diamond_half, diamond_c.y),
+                ImGui::GetColorU32(Rgba(kGreen)));
             ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kGreen));
-            ImGui::SetCursorScreenPos(ImVec2(content_x, y));
-            cosmic::ui::TextSpaced("* HANDSHAKE IN TRANSIT - PIN IS ON THE MONITOR", 0.14f);
+            ImGui::SetCursorScreenPos(ImVec2(content_x + 14.0f * scale, y));
+            cosmic::ui::TextSpaced("HANDSHAKE IN TRANSIT - PIN IS ON THE MONITOR", 0.14f);
             ImGui::PopStyleColor();
             ImGui::SetWindowFontScale(1.0f);
             ImGui::PopFont();

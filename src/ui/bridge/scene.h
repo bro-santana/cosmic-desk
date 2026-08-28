@@ -19,13 +19,13 @@
 //     and the prototype's data-ex/ey/es attributes:
 //
 //         name            depth   ex   ey    es    alpha
-//         nebula.svg       12      0   -14   1.04  0.96
+//         nebula-band-1..8  12     0   -14   1.04  0.96   (split for sway)
 //         stars-far.svg    10      0   -10   1.03  1.0
 //         stars-mid.svg    20      0   -20   1.05  1.0
 //         planets.svg      13      0   -32   1.02  1.0
 //         desk.svg         26      0   +10   1.03  1.0
 //         monitor.svg      26      0   +10   1.03  1.0
-//         screen-logo.svg  26      0   +10   1.03  1.0   (U2: boot fade)
+//         screen-logo.svg  26      0   +10   1.03  1.0   (boot fade)
 //         obj-g11.svg      26      0   +10   1.03  1.0
 //         obj-g18.svg      26      0   +10   1.03  1.0
 //         obj-g22.svg      26      0   +10   1.03  1.0
@@ -38,10 +38,11 @@
 //   translation is kept. U1 owns the per-layer drift animations, the warp
 //   flash, the orbit ring, the vignette, the shooting star and the dashed
 //   geometry helpers; U2 owns the screen glow, the screen-logo boot fade and
-//   the screen_rect() helper; still to come are the nebula per-band sway
-//   (later polish), the tether beams (U3) and the warp animation (U5); this
-//   module is structured to make those easy to append without touching the
-//   layer pipeline.
+//   the screen_rect() helper; the nebula was split into 8 band layers that
+//   sway independently (per-band periods and keyframes); the tether beams are
+//   drawn by the Bridge UI layer, and the warp animation landed with the
+//   stream transition; this module is structured to make additions easy
+//   without touching the layer pipeline.
 
 #pragma once
 #include <SDL.h>

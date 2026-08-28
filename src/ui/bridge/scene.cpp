@@ -43,14 +43,57 @@ struct Layer {
     // U5 warp: the end scale the layer reaches at warp 1 (9/12/16 for the
     // three sky layers, which also fade out; 1 = not affected by the warp).
     float warp_end_scale = 1.0f;
+    // Nebula band sway: index into kNebulaSway, or -1 for no sway. The nebula
+    // was split into 8 bands so each can sway independently; every band keeps
+    // the whole-nebula drift/parallax above and adds its own per-band sway.
+    int sway = -1;
+};
+
+// One nebula band's sway animation (prototype CSS keyframes k1..k8 with
+// transform-box: fill-box and transform-origin: 50% 50%). Each band sways on
+// its own period with ease-in-out keyframes at 0/25/50/75/100% of the cycle
+// (0/100 = identity), staggered by a negative delay. Values are design px/deg;
+// the tiny scale varies per keyframe (1 or 1.008). The rotation origin is the
+// band's own fill-bbox center, given as canvas % (fx, fy).
+struct NebulaSway {
+    float period_s;
+    float delay_s;  // negative: starts N seconds INTO the cycle
+    float k25_tx, k25_ty, k25_rot, k25_sx, k25_sy;
+    float k50_tx, k50_ty, k50_rot, k50_sx, k50_sy;
+    float k75_tx, k75_ty, k75_rot, k75_sx, k75_sy;
+    float fx, fy;  // band center as canvas % (fill-bbox center)
+};
+
+// The 8 nebula bands' sway specs, in band order (sway index 0..7). Periods
+// stagger 9.6s..20.8s and delays -2.1s..-16.8s so the bands never move in
+// lockstep; the translate/rotate/scale keyframes are the prototype's k1..k8.
+constexpr NebulaSway kNebulaSway[8] = {
+    {9.6f,  -2.1f,  19.0f, -17.0f,  0.37f, 1.008f, 1.0f,  -13.3f, 10.2f, 0.0f, 1.0f, 1.008f,  9.5f, 17.0f, -0.37f, 1.0f, 1.0f, 52.4059f, 38.9583f},
+    {11.2f, -4.2f,  26.0f,  -7.0f,  0.49f, 1.0f,   1.0f,  -18.2f,  4.2f, 0.0f, 1.0f, 1.0f,   13.0f,  7.0f, -0.49f, 1.0f, 1.0f, 52.5910f, 41.7917f},
+    {12.8f, -6.3f,  12.0f, -12.0f,  0.61f, 1.008f, 1.0f,   -8.4f,  7.2f, 0.0f, 1.0f, 1.008f,  6.0f, 12.0f, -0.61f, 1.0f, 1.0f, 50.8637f, 39.2500f},
+    {14.4f, -8.4f,  19.0f, -17.0f,  0.25f, 1.0f,   1.0f,  -13.3f, 10.2f, 0.0f, 1.0f, 1.0f,    9.5f, 17.0f, -0.25f, 1.0f, 1.0f, 48.3035f, 38.9583f},
+    {16.0f, -10.5f, 26.0f,  -7.0f,  0.37f, 1.008f, 1.0f,  -18.2f,  4.2f, 0.0f, 1.0f, 1.008f, 13.0f,  7.0f, -0.37f, 1.0f, 1.0f, 45.6817f, 38.9583f},
+    {17.6f, -12.6f, 12.0f, -12.0f,  0.49f, 1.0f,   1.0f,   -8.4f,  7.2f, 0.0f, 1.0f, 1.0f,    6.0f, 12.0f, -0.49f, 1.0f, 1.0f, 43.0907f, 33.5000f},
+    {19.2f, -14.7f, 19.0f, -17.0f,  0.61f, 1.008f, 1.0f,  -13.3f, 10.2f, 0.0f, 1.0f, 1.008f,  9.5f, 17.0f, -0.61f, 1.0f, 1.0f, 40.4997f, 31.1250f},
+    {20.8f, -16.8f, 26.0f,  -7.0f,  0.25f, 1.0f,   1.0f,  -18.2f,  4.2f, 0.0f, 1.0f, 1.0f,   13.0f,  7.0f, -0.25f, 1.0f, 1.0f, 41.2091f, 21.2500f},
 };
 
 // Draw order = array order (back -> front). Values from the handoff README
 // parallax table and the prototype's data-ex/ey/es attributes; the last four
-// columns are the drift spec (period/dx/dy/delay, 0 = no drift) and the last
-// column is the U5 warp end scale (1 = not affected).
+// columns are the drift spec (period/dx/dy/delay, 0 = no drift), the next is
+// the U5 warp end scale (1 = not affected) and the last is the nebula sway
+// index (-1 = none). The nebula was split into 8 bands (nebula-band-1..8.svg,
+// one clip-path group each) so each band can sway independently; they all keep
+// the original nebula's depth/offset/scale/alpha and whole-nebula drift.
 constexpr Layer kLayers[] = {
-    {"nebula.svg",      12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f},
+{"nebula-band-1.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 0},
+{"nebula-band-2.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 1},
+{"nebula-band-3.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 2},
+{"nebula-band-4.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 3},
+{"nebula-band-5.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 4},
+{"nebula-band-6.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 5},
+{"nebula-band-7.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 6},
+{"nebula-band-8.svg", 12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f, 1.0f, 7},
     {"stars-far.svg",   10.0f,   0.0f, -10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f, 9.0f},
     {"stars-mid.svg",   20.0f,   0.0f, -20.0f, 1.05f, 1.00f, 26.0f,  14.0f, -10.0f,   0.0f, 12.0f},
     {"planets.svg",     13.0f,   0.0f, -32.0f, 1.02f, 1.00f, 32.0f,  14.0f, -10.0f,  -8.0f, 16.0f},
@@ -69,7 +112,7 @@ constexpr int kLayerCount = static_cast<int>(sizeof(kLayers) / sizeof(kLayers[0]
 // The reflex and screen-logo layers are the exceptions whose alpha is driven
 // per-frame (the glint value / the caller's boot fade) instead of the table.
 constexpr int kReflexIndex = kLayerCount - 1;
-constexpr int kScreenLogoIndex = 6;  // screen-logo.svg entry in kLayers
+constexpr int kScreenLogoIndex = 13;  // screen-logo.svg entry in kLayers
 
 // Cursor chase tuning (per-frame factors at a nominal 60 fps, time-corrected
 // in draw() like every other easing). The onset ramp mirrors the warp
@@ -86,7 +129,7 @@ constexpr float kSettleEps = 0.02f;  // error below this -> ramp decays
 
 // First layer of the desk group (desk.svg). The warp flash draws just before
 // it, between the sky layers and the desk group (UI_MIGRATION A3).
-constexpr int kDeskGroupIndex = 4;
+constexpr int kDeskGroupIndex = 11;
 
 // One twinkle dot, generated by the seeded LCG below.
 struct Twinkle {
@@ -696,6 +739,44 @@ float WarpFlashAlpha(double elapsed_s) {
     return 0.0f;
 }
 
+// Samples a nebula band's sway animation at the given time, returning the
+// interpolated translate (design px), rotation (deg) and scale. Ease-in-out
+// (Hermite) between the 0/25/50/75/100% keyframes; 0/100 are identity.
+void SampleSway(const NebulaSway& s, float time_s, float& tx, float& ty,
+                float& rot, float& sx, float& sy) {
+    // delay_s is NEGATIVE, so (time - delay) starts the cycle N seconds INTO
+    // it (CSS animation-delay semantics), like the drift phase above.
+    float p = std::fmod((time_s - s.delay_s) / s.period_s, 1.0f);
+    if (p < 0.0f) {
+        p += 1.0f;
+    }
+    // Keyframe array: (frac, tx, ty, rot, sx, sy); 0 and 1 are identity.
+    const float kf[5][6] = {
+        {0.00f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        {0.25f, s.k25_tx, s.k25_ty, s.k25_rot, s.k25_sx, s.k25_sy},
+        {0.50f, s.k50_tx, s.k50_ty, s.k50_rot, s.k50_sx, s.k50_sy},
+        {0.75f, s.k75_tx, s.k75_ty, s.k75_rot, s.k75_sx, s.k75_sy},
+        {1.00f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+    };
+    // Find the segment containing p (p in [0,1) after fmod; p == 0 lands in
+    // the first segment at u = 0, i.e. identity).
+    int seg = 0;
+    for (int i = 1; i < 5; ++i) {
+        if (p <= kf[i][0]) {
+            seg = i - 1;
+            break;
+        }
+    }
+    const float u = (p - kf[seg][0]) / (kf[seg + 1][0] - kf[seg][0]);
+    const float e = u * u * (3.0f - 2.0f * u);  // Hermite ease-in-out
+    const auto lerp = [e](float a, float b) { return a + (b - a) * e; };
+    tx = lerp(kf[seg][1], kf[seg + 1][1]);
+    ty = lerp(kf[seg][2], kf[seg + 1][2]);
+    rot = lerp(kf[seg][3], kf[seg + 1][3]);
+    sx = lerp(kf[seg][4], kf[seg + 1][4]);
+    sy = lerp(kf[seg][5], kf[seg + 1][5]);
+}
+
 // The desk group's dest rect for the given viewport: the art box scaled by the
 // desk layer's es and translated by its parallax offsets (ex/ey minus depth
 // times the smoothed cursor). All desk-group layers share these values, so
@@ -1025,13 +1106,52 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         }
         const float ox = layer.ex - cx * layer.depth + anim_ox;
         const float oy = layer.ey - cy * layer.depth + anim_oy;
-        const SDL_FRect dest{
+        const SDL_FRect dest0{
             static_cast<float>(out_w) / 2.0f - w / 2.0f + ox,
             static_cast<float>(out_h) / 2.0f - h / 2.0f + oy,
             w,
             h,
         };
-        SDL_RenderCopyF(renderer, tex, nullptr, &dest);
+
+        if (layer.sway >= 0) {
+            // Nebula band sway: translate/rotate/scale the band about its own
+            // fill-bbox center (fx/fy as canvas % of the art box), on top of
+            // the shared drift/parallax dest0. The warp sky-scaling above does
+            // not apply to the bands (warp_end_scale stays 1), so dest0 is the
+            // normal path.
+            const NebulaSway& s = kNebulaSway[layer.sway];
+            float tx, ty, rot, sx, sy;
+            SampleSway(s, in.time_s, tx, ty, rot, sx, sy);
+
+            // Band center on screen.
+            const float Px = dest0.x + s.fx * dest0.w;
+            const float Py = dest0.y + s.fy * dest0.h;
+
+            // Translate by the sway (design px x scale; rot/scale unscaled).
+            const float tox = tx * scale;
+            const float toy = ty * scale;
+            const SDL_FRect dest1{dest0.x + tox, dest0.y + toy, dest0.w, dest0.h};
+            const float P1x = Px + tox;
+            const float P1y = Py + toy;
+
+            // Scale about P1 (the translated band center).
+            const SDL_FRect dest2{
+                P1x - sx * (P1x - dest1.x),
+                P1y - sy * (P1y - dest1.y),
+                dest1.w * sx,
+                dest1.h * sy,
+            };
+
+            // Rotation origin = the band center relative to dest2's top-left:
+            // P1 sits at (fx*dest0.w, fy*dest0.h) inside dest1, and scaling
+            // about P1 moves dest2's top-left by (1-sx)*(P1-dest1), so the
+            // center lands at (sx*fx*dest0.w, sy*fy*dest0.h).
+            const SDL_FPoint center{sx * s.fx * dest0.w, sy * s.fy * dest0.h};
+            SDL_RenderCopyExF(renderer, tex, nullptr, &dest2, rot, &center,
+                              SDL_FLIP_NONE);
+        } else {
+            SDL_RenderCopyF(renderer, tex, nullptr, &dest0);
+        }
     }
 
     // 6. Orbit ring (dashed ellipse), drawn after the desk group per A3 order
