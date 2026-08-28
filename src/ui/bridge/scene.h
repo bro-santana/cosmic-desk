@@ -74,6 +74,11 @@ void shutdown(SDL_Renderer* renderer);
 // state.
 void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in);
 
+// The smoothed parallax cursor in [-1,1]^2 (design "c"), as of the last draw.
+// The Bridge UI uses it for the machine-card orbit and its parallax factor.
+struct CursorSmooth { float x, y; };
+CursorSmooth smoothed_cursor();
+
 // The monitor screen rectangle (handoff README: left 38.86%, top 29.57%,
 // width 28.56%, height 23.66% of the 1620.8481x1200 art box), transformed by
 // the desk group's current parallax/scale, in renderer-output px for the given

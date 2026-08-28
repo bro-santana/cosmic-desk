@@ -109,8 +109,11 @@ correct; tray/hidden/viewer paths unaffected.
   monitor layer's screen rect — the handoff README line 130 itself flags that
   the clip mask needs to be made self-contained). U2 inlines the references; the
   per-frame glint math is already in place and inert until then.
-- The opaque classic overlay window occludes the left half of the scene during
-  U0–U2 (it is removed by U3/U4). Expected, not a bug.
+- The opaque classic overlay window occludes part of the scene during U0–U2;
+  U3 keeps it as the management fallback (its position is user-movable and
+  saved in imgui.ini, so it can overlap an orbiting card — the cards' viewport
+  clamp is unaffected). U4 replaces it with the Bridge's own panels and U7
+  deletes it.
 - Parallax mouse input: when the cursor leaves the window ImGui reports
   (-FLT_MAX,-FLT_MAX); the scene holds the last smoothed position (isfinite
   guards) — matching the prototype, which only updates on in-window mousemove.

@@ -959,4 +959,8 @@ SDL_FRect screen_rect(int out_w, int out_h) {
     };
 }
 
+CursorSmooth smoothed_cursor() {
+    return CursorSmooth{g_state.cx, g_state.cy};
+}
+
 }  // namespace cosmic::ui::scene
