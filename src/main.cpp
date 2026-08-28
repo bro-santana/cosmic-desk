@@ -15,7 +15,6 @@
 #include "ui/bridge/bridge.h"
 #include "ui/bridge/design.h"
 #include "ui/bridge/scene.h"
-#include "ui/host_list.h"
 #include "ui/pin_dialog.h"
 #include "ui/scale.h"
 #include "ui/theme.h"
@@ -880,8 +879,7 @@ int main(int argc, char** argv) {
         // auto-pair PIN on the Connect path is produced by the session worker
         // itself (ViewerState PairingNeedPin/PairingInProgress with
         // session_status.pin) WITHOUT the latch, so feed the bridge's pairing
-        // fields from BOTH sources. This replaces the old inline PIN display
-        // that lived at the bottom of the classic "Cosmic Desk" window.
+        // fields from BOTH sources.
         const bool auto_pair_pin =
             (session_status.state == cosmic::viewer::ViewerState::PairingNeedPin ||
              session_status.state == cosmic::viewer::ViewerState::PairingInProgress) &&

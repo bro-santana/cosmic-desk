@@ -100,10 +100,8 @@ add_executable(cosmicdesk
     src/hostglue/host.cpp
     src/hostglue/pin_bridge.cpp
     src/hostglue/displays.cpp
-    src/ui/host_list.cpp
     src/ui/pin_dialog.cpp
     src/ui/scale.cpp
-    src/ui/settings_window.cpp
     src/ui/theme.cpp
     src/ui/tray.cpp
     src/ui/viewer_topbar.cpp

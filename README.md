@@ -4,7 +4,7 @@
 
 A minimal remote desktop tool built on the **Moonlight protocol** and based on the **Sunshine** project.
 
-Cosmic Desk acts as both **client** and **server**, making it easier to use as a remote desktop app than other moonlight-based alternatives.
+Cosmic Desk acts as both **client** and **server**, making it easier to use as a remote desktop app than other moonlight-based alternatives. Its UI is the parallax space-launcher Bridge (see [`docs/UI_MIGRATION.md`](docs/UI_MIGRATION.md)).
 
 ## TODOs
 
@@ -74,6 +74,7 @@ branch.
 | Document | Contents |
 |---|---|
 | [`PLAN.md`](PLAN.md) | Architecture, design decisions, milestones, risks |
+| [`docs/UI_MIGRATION.md`](docs/UI_MIGRATION.md) | UI migration: Bridge launcher plan, decisions, milestones |
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Toolchain setup and troubleshooting |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Ports, pairing flow, and the Cosmic protocol extensions |
 | [`docs/VENDOR.md`](docs/VENDOR.md) | **Provenance of every piece of copied code** |

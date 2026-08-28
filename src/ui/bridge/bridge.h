@@ -1,13 +1,28 @@
 // Cosmic Desk — Bridge UI overlay (docs/UI_MIGRATION.md U2-U4).
-// Draws the fullscreen ImGui layer that lives above the parallax scene and
-// below the classic control window during the migration: the monitor boot
-// sequence, the hosting beacon, and (U3) the machine cards, bottom dock and
-// session status.
+// Draws the fullscreen ImGui layer that sits above the parallax scene: the
+// monitor boot sequence, the hosting beacon, and (U3) the machine cards,
+// bottom dock and session status.
 #pragma once
 #include "app/settings.h"
 #include <map>
 #include <string>
 #include <vector>
+
+namespace cosmic::ui {
+
+// Live pair-worker feedback for the Pair modal. main.cpp fills this from
+// viewer::SessionStatus: the ui layer must not include viewer/session.h (same
+// bridging as MonitorInfo / to_monitor_info in main.cpp).
+// Moved here from the deleted ui/host_list.h (U7).
+struct PairProgress {
+  bool active = false;      // a pair worker is running
+  bool show_pin = false;    // state is PairingNeedPin/PairingInProgress
+  std::string pin;          // 4 digits, shown large
+  std::string message;
+  std::string error;        // sticky; non-empty = the last attempt failed
+};
+
+}  // namespace cosmic::ui
 
 namespace cosmic::ui::bridge {
 
@@ -66,14 +81,13 @@ struct BridgeInput {
     std::string pairing_error;
 };
 
-// User actions, applied by main.cpp AFTER the ImGui frame (same discipline as
-// HostListAction).
+// User actions, applied by main.cpp AFTER the ImGui frame (the codebase's
+// no-side-effects-mid-frame discipline).
 struct BridgeAction {
     enum Kind {
         None,
         Connect,
         Edit,
-        ToggleSettings,  // no longer emitted: the dock flips BridgeState directly
         Disconnect,
         SetResolution,
         SetFps,
@@ -99,8 +113,7 @@ struct BridgeDrawResult {
 };
 
 // Draws the fullscreen Bridge window and its in-scene monitor UI. Call once
-// per frame in MainWindow mode BEFORE the classic window is drawn (so the
-// classic window stays on top). The fullscreen window has no background
+// per frame in MainWindow mode. The fullscreen window has no background
 // (the scene shows through). Returns the screen-logo opacity the caller
 // should pass to the scene (1 during boot, fading to 0 over 1.4s after boot
 // completes at 4.4s) so the scene can alpha-mod the logo texture.

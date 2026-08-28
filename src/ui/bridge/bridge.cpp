@@ -1,9 +1,9 @@
 // Cosmic Desk — Bridge UI overlay implementation (docs/UI_MIGRATION.md U2-U4).
 //
-// Draws the fullscreen ImGui window that sits above the parallax scene and
-// below the classic control window: the monitor boot sequence (once per
-// launch), the hosting beacon, and (U3) the machine cards orbiting the scene
-// center, the bottom dock and the session status. The window background is
+// Draws the fullscreen ImGui window that sits above the parallax scene: the
+// monitor boot sequence (once per launch), the hosting beacon, and (U3) the
+// machine cards orbiting the scene center, the bottom dock and the session
+// status. The window background is
 // fully transparent so the scene shows through; all geometry derives from the
 // monitor screen rect (scene::screen_rect) and is specified in design px,
 // multiplied by ui::scale() at draw time like the rest of the Bridge UI.
@@ -596,8 +596,7 @@ BridgeAction DrawEmptyCard(const BridgeInput& in, BridgeState* state,
 
 // Bottom dock: PAIR MACHINE + SETTINGS, fixed at bottom center (never orbits).
 // The SETTINGS button flips state->settings_open directly — the panel is drawn
-// after the dock, so it appears above it, and main.cpp never sees a
-// ToggleSettings action.
+// after the dock, so it appears above it.
 BridgeAction DrawDock(BridgeState* state, const ImVec2& vp_size, float scale) {
     BridgeAction action;
     ImGui::PushFont(cosmic::ui::FontMonoBold());
@@ -682,8 +681,7 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     const SDL_FRect scr = cosmic::ui::scene::screen_rect(out_w, out_h);
 
     // Fullscreen borderless window with no background: the scene shows
-    // through, and the classic control window is drawn after this one so it
-    // stays on top.
+    // through.
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size, ImGuiCond_Always);

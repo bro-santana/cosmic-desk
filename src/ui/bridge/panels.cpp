@@ -84,8 +84,7 @@ constexpr float kPinSlideS = 0.7f;
 constexpr float kSweepPeriodS = 2.4f;  // PIN panel scanline sweep period
 
 // ASCII filter: the default ImGui font has no glyphs beyond Basic Latin, so a
-// pasted non-ASCII character would render as '?' forever (same filter as
-// host_list.cpp).
+// pasted non-ASCII character would render as '?' forever.
 int ascii_filter(ImGuiInputTextCallbackData* data) {
     if (data->EventChar < 0x20 || data->EventChar > 0x7E) {
         return 1;  // Reject the character.
@@ -93,7 +92,7 @@ int ascii_filter(ImGuiInputTextCallbackData* data) {
     return 0;
 }
 
-// Trims whitespace from both ends (same helper as host_list.cpp).
+// Trims whitespace from both ends.
 std::string trim(const std::string& s) {
     const auto begin = s.find_first_not_of(" \t\r\n");
     if (begin == std::string::npos) {

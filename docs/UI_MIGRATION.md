@@ -87,7 +87,7 @@ docs/VENDOR.md                    lunasvg + fonts provenance rows
 
 ## 3. Milestones
 
-### U0 — Groundwork: fonts, assets, scene scaffold (4–6 days)
+### U0 — Groundwork: fonts, assets, scene scaffold (DONE)
 
 1. Vendor `lunasvg` (pinned release tag, MIT); commit fonts + layer SVGs;
    **extract `nebula.svg`** from the handoff HTML (the inline `<svg>` inside the
@@ -131,7 +131,7 @@ correct; tray/hidden/viewer paths unaffected.
   (-FLT_MAX,-FLT_MAX); the scene holds the last smoothed position (isfinite
   guards) — matching the prototype, which only updates on in-window mousemove.
 
-### U1 — Sky complete (3–4 days)
+### U1 — Sky complete (DONE)
 
 1. Add remaining sky layers in prototype order with the handoff's depth/ex/ey/es
    values (bg 8, nebula 12 drift 34 s, planets 13 drift2 32 s −8 s, stars-far 10,
@@ -149,7 +149,7 @@ correct; tray/hidden/viewer paths unaffected.
 **Accept:** full sky indistinguishable from `00-bridge-main.png` minus cards/desk;
 beams/ring helpers proven with a temporary debug draw.
 
-### U2 — Desk scene (3–5 days)
+### U2 — Desk scene (DONE)
 
 1. Desk group = one layer (depth 26, extra y +10): `desk.svg` → `monitor.svg` →
    `screen-logo.svg` (boot only, fade 1.4 s) → `obj-g*.svg` ×5 → `reflex.svg`.
@@ -168,7 +168,7 @@ beams/ring helpers proven with a temporary debug draw.
 values; beacon label updates when a client pairs; beacon/glow/reflex react to the
 mouse like the prototype.
 
-### U3 — Machine cards + orbit (5–7 days)
+### U3 — Machine cards + orbit (DONE)
 
 1. `settings.h`: add `int64_t last_connected` (+ JSON field, missing = 0); set it
    in the viewer session on successful stream start.
@@ -197,7 +197,7 @@ Connect → existing session starts (video view unchanged); Pair opens the *old*
 modal still (U4 restyles it); rename/remove/edit work; empty state shows with
 zero hosts; cards never leave the viewport while orbiting.
 
-### U4 — Panels: Settings, Pair modal, PIN on monitor (5–7 days)
+### U4 — Panels: Settings, Pair modal, PIN on monitor (DONE)
 
 1. **Settings panel** (right 4 %/top 10 %, 348 px, depth 70): segmented
    NATIVE/1080P/1440P/4K (maps to `ResolutionMode`; Custom stays settable via
@@ -228,7 +228,7 @@ zero hosts; cards never leave the viewport while orbiting.
 the next stream; a real two-machine pairing shows the PIN on the in-scene monitor
 and completes; cancel/error paths behave exactly as today.
 
-### U5 — Warp (3–5 days)
+### U5 — Warp (DONE)
 
 1. `warp.cpp`: `warpT += (target − warpT)·k` with the time-corrected factor
    `k = 1 − pow(1 − 0.05, dt·60)` (§5 — the prototype's 0.05 assumes a 60 fps
@@ -248,7 +248,7 @@ sky zooms, flash, then video; disconnect → scene reassembles; 10×
 connect/disconnect loop is stable; a dead host warps back with an error, never a
 stuck state.
 
-### U6 — Presence + polish (3–5 days)
+### U6 — Presence + polish (DONE)
 
 1. `app/presence.{h,cpp}`: curl worker as specced in §2; cards show LINK READY
    (green) for reachable hosts; the host's own beacon counts pairs. Handles: host
@@ -260,7 +260,7 @@ stuck state.
 **Accept:** status dots reflect reality within ~10 s (flip machine off/on);
 visual diff against all 5 screenshots passes at normal glance.
 
-### U7 — Cleanup + docs (2–3 days)
+### U7 — Cleanup + docs (IN PROGRESS — landed in this change)
 
 1. Delete `src/ui/host_list.{h,cpp}` + its CMake entry and main.cpp remnants.
    Verify zip/deb bundling picks up `assets/ui/layers` + `assets/fonts`
@@ -321,3 +321,17 @@ flash 2.2s peak 72%
   off-limits except the two marked gate points in U5.
 - **Order matters:** no milestone starts before the previous one's acceptance
   passes; each leaves the app runnable.
+
+## 6. Status & remaining polish
+
+U0-U6 are complete and the classic UI (host_list, settings_window) is deleted
+(U7). Remaining optional polish, none blocking:
+
+- Visual side-by-side pass of the Settings/Pair panels and the warp against the
+  handoff screenshots (code-reviewed, not yet eyeballed on a free desktop).
+- Draw ✎/◈/✕ as ImDrawList primitives (current ASCII stand-ins EDIT/*/X).
+- Tether beams (`DrawDashedLine` helper exists, unused).
+- Card drop-shadow halo + DOF far-card fade.
+- Nebula per-band sway.
+- IPv6 literal bracketing in `presence.cpp`.
+- Card hover scale.
