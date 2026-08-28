@@ -1,7 +1,7 @@
 # Cosmic Desk - the single source of truth for the release version (plan M6.4).
 #
-# Derives the version from `git describe --tags --long --always` once, and
-# exposes it in the four shapes the packaging formats need:
+# Derives the version once, from `git describe --tags --long --always --match
+# "v*"`, and exposes it in the four shapes the packaging formats need:
 #   COSMICDESK_VERSION       X.Y.Z          numeric triple, feeds project(VERSION)
 #   COSMICDESK_VERSION_FULL  X.Y.Z-N-gSHA   human-facing string
 #   COSMICDESK_VERSION_INFO  X.Y.Z.N        Windows VERSIONINFO (four numeric fields)
@@ -44,7 +44,7 @@ find_package(Git QUIET)
 set(_cd_describe "")
 if(Git_FOUND AND EXISTS "${_cd_root}/.git")
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" describe --tags --long --always
+        COMMAND "${GIT_EXECUTABLE}" describe --tags --long --always --match "v*"
         WORKING_DIRECTORY "${_cd_root}"
         OUTPUT_VARIABLE _cd_describe
         OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -56,6 +56,14 @@ endif()
 # covers both cases. With no reachable tag, --always prints the bare short SHA
 # (this is also what a shallow clone looks like - CI checks out with
 # fetch-depth: 0 to avoid it).
+#
+# --match "v*" is load-bearing, not tidiness. nightly.yml publishes through a
+# MOVING tag named `nightly`, which CI fetches along with everything else; when
+# it is the nearest tag, describe reports `nightly-0-g<sha>` and every nightly
+# installer ends up stamped AppVersion "nightly" / VERSIONINFO 0.0.0.0 -
+# indistinguishable from every other nightly. The filter matches release.yml's
+# own trigger (tags: ["v*"]), so a tag that ships a release is exactly a tag
+# that names a version here.
 if(_cd_describe MATCHES "^(.+)-([0-9]+)-g([0-9a-fA-F]+)$")
     set(_cd_tag "${CMAKE_MATCH_1}")
     set(_cd_count "${CMAKE_MATCH_2}")
