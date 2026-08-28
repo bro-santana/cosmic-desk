@@ -10,6 +10,7 @@
 #include "app/state.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
+#include "ui/bridge/bridge.h"
 #include "ui/bridge/design.h"
 #include "ui/bridge/scene.h"
 #include "ui/host_list.h"
@@ -439,6 +440,9 @@ int main(int argc, char** argv) {
 
     // Managed host list (plan M3.x): persistent selection + modal state.
     cosmic::ui::HostListState host_list_state;
+    // Bridge overlay state (docs/UI_MIGRATION.md U2): persists the boot
+    // sequence across frames (and across hide/show cycles).
+    cosmic::ui::bridge::BridgeState bridge_state;
     // Pair latch: while an explicit Pair is in flight, the main loop turns the
     // session status into a PairProgress for the Pair modal. pair_error is
     // sticky — it stays set until the next StartPair, since state==Failed is
@@ -778,6 +782,15 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
+        // Bridge overlay (docs/UI_MIGRATION.md U2): fullscreen window under
+        // the classic control window, with the in-scene monitor UI. Drawn
+        // before the classic window so the classic window stays on top.
+        const float screen_logo_alpha = cosmic::ui::bridge::draw_bridge(
+            {hosting_ok, settings.port_base,
+             cosmic::hostglue::paired_client_count(),
+             static_cast<double>(SDL_GetTicks64()) / 1000.0},
+            &bridge_state);
+
         const float ui_scale = cosmic::ui::scale();
         ImGui::SetNextWindowPos(ImVec2(20 * ui_scale, 20 * ui_scale),
                                 ImGuiCond_FirstUseEver);
@@ -864,6 +877,7 @@ int main(int argc, char** argv) {
             scene_input.mouse_y = mouse.y;
             scene_input.time_s = static_cast<float>(SDL_GetTicks64()) / 1000.0f;
             scene_input.motion = 1.0f;
+            scene_input.screen_logo_alpha = screen_logo_alpha;
             cosmic::ui::scene::draw(renderer, out_w, out_h, scene_input);
         }
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);

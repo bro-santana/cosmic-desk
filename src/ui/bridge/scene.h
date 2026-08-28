@@ -22,7 +22,7 @@
 //         planets.svg      13      0   -32   1.02  1.0
 //         desk.svg         26      0   +10   1.03  1.0
 //         monitor.svg      26      0   +10   1.03  1.0
-//         screen-logo.svg  26      0   +10   1.03  1.0   (U0: full alpha)
+//         screen-logo.svg  26      0   +10   1.03  1.0   (U2: boot fade)
 //         obj-g11.svg      26      0   +10   1.03  1.0
 //         obj-g18.svg      26      0   +10   1.03  1.0
 //         obj-g22.svg      26      0   +10   1.03  1.0
@@ -34,10 +34,11 @@
 //   omitted (decision A5a): ImGui cannot rotate text, so only the parallax
 //   translation is kept. U1 owns the per-layer drift animations, the warp
 //   flash, the orbit ring, the vignette, the shooting star and the dashed
-//   geometry helpers; still to come are the nebula per-band sway (later
-//   polish), the tether beams (U3), the boot sequence/beacon/glow (U2), the
-//   cards/dock (U3) and the warp animation (U5); this module is structured to
-//   make those easy to append without touching the layer pipeline.
+//   geometry helpers; U2 owns the screen glow, the screen-logo boot fade and
+//   the screen_rect() helper; still to come are the nebula per-band sway
+//   (later polish), the tether beams (U3) and the warp animation (U5); this
+//   module is structured to make those easy to append without touching the
+//   layer pipeline.
 
 #pragma once
 #include <SDL.h>
@@ -52,6 +53,9 @@ struct SceneInput {
     float motion = 1.0f;   // parallax strength (design "motion" prop)
     float flash_alpha = 0.0f;  // warp flash opacity; U5 animates 0->1->0 during
                                // the warp, U1 draws it when > 0
+    // Screen-logo overlay opacity (0..1). U2 drives 1 during boot, fading to 0
+    // over the 1.4s after boot completes; U0 had it always-on.
+    float screen_logo_alpha = 1.0f;
 };
 
 // Loads nothing yet; prepares state. Call once after the renderer exists.
@@ -69,5 +73,13 @@ void shutdown(SDL_Renderer* renderer);
 // re-asserts its own renderer state in RenderDrawData. Does not touch ImGui
 // state.
 void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in);
+
+// The monitor screen rectangle (handoff README: left 38.86%, top 29.57%,
+// width 28.56%, height 23.66% of the 1620.8481x1200 art box), transformed by
+// the desk group's current parallax/scale, in renderer-output px for the given
+// viewport. Uses the smoothed cursor state; the ImGui overlay calls it before
+// scene draw of the same frame, so the rect lags one frame (imperceptible at
+// the 0.055 easing rate).
+SDL_FRect screen_rect(int out_w, int out_h);
 
 }  // namespace cosmic::ui::scene

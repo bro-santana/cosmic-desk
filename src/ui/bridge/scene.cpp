@@ -25,9 +25,10 @@ namespace {
 
 // One parallax layer: the SVG file name, its depth (parallax weight), the
 // prototype's ex/ey pixel offsets and es scale, and the base alpha. reflex.svg
-// is the exception: its alpha is driven per-frame by the glint value instead.
-// The drift fields animate a slow translate back and forth (prototype CSS
-// keyframes drift/drift2); drift_period_s == 0 disables the drift.
+// and screen-logo.svg are the exceptions: their alpha is driven per-frame
+// instead (the glint value / the caller's boot fade). The drift fields animate
+// a slow translate back and forth (prototype CSS keyframes drift/drift2);
+// drift_period_s == 0 disables the drift.
 struct Layer {
     const char* name;
     float depth;
@@ -51,7 +52,7 @@ constexpr Layer kLayers[] = {
     {"planets.svg",     13.0f,   0.0f, -32.0f, 1.02f, 1.00f, 32.0f,  14.0f, -10.0f,  -8.0f},
     {"desk.svg",        26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"monitor.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
-    {"screen-logo.svg", 26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
+    {"screen-logo.svg", 26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},  // alpha overridden per-frame (U2)
     {"obj-g11.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"obj-g18.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"obj-g22.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
@@ -61,8 +62,10 @@ constexpr Layer kLayers[] = {
 };
 constexpr int kLayerCount = static_cast<int>(sizeof(kLayers) / sizeof(kLayers[0]));
 
-// The reflex layer is the only one whose alpha is animated per frame.
+// The reflex and screen-logo layers are the exceptions whose alpha is driven
+// per-frame (the glint value / the caller's boot fade) instead of the table.
 constexpr int kReflexIndex = kLayerCount - 1;
+constexpr int kScreenLogoIndex = 6;  // screen-logo.svg entry in kLayers
 
 // First layer of the desk group (desk.svg). The warp flash draws just before
 // it, between the sky layers and the desk group (UI_MIGRATION A3).
@@ -88,6 +91,7 @@ struct State {
     SDL_Texture* flash = nullptr;  // warp flash (opacity driven by flash_alpha)
     SDL_Texture* vignette = nullptr;  // full-viewport edge fade, drawn last
     SDL_Texture* streak = nullptr;    // shooting-star streak (fixed 170x2)
+    SDL_Texture* glow = nullptr;      // screen glow (fixed 256x256)
     std::vector<Twinkle> twinkles;
     float cx = 0.0f;  // smoothed cursor, -1..1
     float cy = 0.0f;
@@ -393,6 +397,51 @@ SDL_Texture* BuildStreak(SDL_Renderer* renderer) {
     return tex;
 }
 
+// Builds the screen-glow texture at a fixed 256x256 (the dest rect scales it
+// to 34%/30% of the desk rect at draw time, so it is built once at init, not
+// per resize). Replicates the prototype's glow div `radial-gradient(closest-side,
+// rgba(138,199,229,.28), rgba(138,199,229,0))`: kCyan rgb with alpha
+// 0.28 * max(0, 1 - d), where d is the normalized distance from the center
+// (closest-side = the box edge at d = 1, clamped beyond). The .28 is baked in;
+// the per-frame flicker is applied via SDL_SetTextureAlphaMod.
+SDL_Texture* BuildGlow(SDL_Renderer* renderer) {
+    constexpr int kGlowSize = 256;
+    std::vector<uint32_t> pixels(static_cast<size_t>(kGlowSize) * kGlowSize);
+    const uint32_t gr = (kCyan >> 24) & 0xFF;  // 138
+    const uint32_t gg = (kCyan >> 16) & 0xFF;  // 199
+    const uint32_t gb = (kCyan >> 8) & 0xFF;   // 229
+    for (int y = 0; y < kGlowSize; ++y) {
+        for (int x = 0; x < kGlowSize; ++x) {
+            const float dx =
+                (static_cast<float>(x) - kGlowSize / 2.0f) / (kGlowSize / 2.0f);
+            const float dy =
+                (static_cast<float>(y) - kGlowSize / 2.0f) / (kGlowSize / 2.0f);
+            const float d = std::hypot(dx, dy);
+            const float a = 0.28f * std::max(0.0f, 1.0f - d);
+            const uint32_t alpha = static_cast<uint32_t>(a * 255.0f);
+            pixels[static_cast<size_t>(y) * kGlowSize + x] =
+                (alpha << 24) | (gr << 16) | (gg << 8) | gb;
+        }
+    }
+
+    SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_STATIC, kGlowSize,
+                                         kGlowSize);
+    if (tex == nullptr) {
+        std::fprintf(stderr, "[scene] SDL_CreateTexture (glow) failed: %s\n",
+                     SDL_GetError());
+        return nullptr;
+    }
+    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), kGlowSize * 4) != 0) {
+        std::fprintf(stderr, "[scene] SDL_UpdateTexture (glow) failed: %s\n",
+                     SDL_GetError());
+        SDL_DestroyTexture(tex);
+        return nullptr;
+    }
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    return tex;
+}
+
 // Generates the 44 twinkle dots with the prototype's exact seeded LCG (seed 42).
 void BuildTwinkles() {
     g_state.twinkles.clear();
@@ -574,6 +623,56 @@ void RasterizeAll(SDL_Renderer* renderer, int tex_w, int tex_h) {
     g_state.last_rasterize_ms = SDL_GetTicks64();
 }
 
+// Parallax strength for the current frame, guarded against non-finite values:
+// U5 will animate motion, and a NaN would re-poison every dest rect the same
+// way the mouse NaN did. screen_rect() has no motion input, so it uses the
+// guarded default (1.0, which main.cpp always passes today).
+float GuardedMotion(float motion) {
+    return std::isfinite(motion) ? motion : 1.0f;
+}
+
+// The screen glow's 7s flicker opacity (prototype `flick` keyframes):
+// piecewise-linear between the 0/42/48/55/70/100% cycle points at
+// .5/.72/.42/.8/.58/.5.
+float FlickerOpacity(float t7) {
+    constexpr float kFlickTimes[] = {0.00f, 0.42f, 0.48f, 0.55f, 0.70f, 1.00f};
+    constexpr float kFlickOpacities[] = {0.50f, 0.72f, 0.42f, 0.80f, 0.58f, 0.50f};
+    constexpr int kFlickCount = 6;
+    const float p = t7 / 7.0f;  // 0..1 across the cycle
+    for (int i = 1; i < kFlickCount; ++i) {
+        if (p <= kFlickTimes[i]) {
+            const float t =
+                (p - kFlickTimes[i - 1]) / (kFlickTimes[i] - kFlickTimes[i - 1]);
+            return kFlickOpacities[i - 1] +
+                   (kFlickOpacities[i] - kFlickOpacities[i - 1]) * t;
+        }
+    }
+    return kFlickOpacities[kFlickCount - 1];
+}
+
+// The desk group's dest rect for the given viewport: the art box scaled by the
+// desk layer's es and translated by its parallax offsets (ex/ey minus depth
+// times the smoothed cursor). All desk-group layers share these values, so
+// screen_rect() and the glow map percentages of the art box onto this rect.
+// Motion is the guarded parallax strength (1.0 today: main.cpp always passes
+// 1.0 and screen_rect has no motion input).
+SDL_FRect DeskDest(int out_w, int out_h) {
+    const float art_w = std::max(1.04f * out_w, 1.4f * out_h);
+    const float art_h = art_w * 1200.0f / 1620.8481f;
+    const Layer& desk = kLayers[kDeskGroupIndex];
+    const float w = art_w * desk.es;
+    const float h = art_h * desk.es;
+    const float motion = GuardedMotion(1.0f);
+    const float ox = desk.ex - g_state.cx * desk.depth * motion;
+    const float oy = desk.ey - g_state.cy * desk.depth * motion;
+    return SDL_FRect{
+        static_cast<float>(out_w) / 2.0f - w / 2.0f + ox,
+        static_cast<float>(out_h) / 2.0f - h / 2.0f + oy,
+        w,
+        h,
+    };
+}
+
 }  // namespace
 
 void init(SDL_Renderer* renderer) {
@@ -592,6 +691,7 @@ void init(SDL_Renderer* renderer) {
     // The streak is a fixed design size (170x2) scaled via its dest rect, so it
     // is built once here rather than per resize like the viewport textures.
     g_state.streak = BuildStreak(renderer);
+    g_state.glow = BuildGlow(renderer);
     g_state.initialized = true;
 }
 
@@ -604,6 +704,7 @@ void shutdown(SDL_Renderer* renderer) {
     DestroyTexture(g_state.flash);
     DestroyTexture(g_state.vignette);
     DestroyTexture(g_state.streak);
+    DestroyTexture(g_state.glow);
     g_state.tex_w = 0;
     g_state.tex_h = 0;
     g_state.last_rasterize_ms = 0;
@@ -686,7 +787,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     // 5. Layer pass, back -> front.
     // Guard motion like the easing above: U5 will animate it, and a non-finite
     // value would re-poison every dest rect the same way the mouse NaN did.
-    const float motion = std::isfinite(in.motion) ? in.motion : 1.0f;
+    const float motion = GuardedMotion(in.motion);
     const float cx = g_state.cx * motion;
     const float cy = g_state.cy * motion;
     for (int i = 0; i < kLayerCount; ++i) {
@@ -737,6 +838,26 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             SDL_RenderCopy(renderer, g_state.flash, nullptr, &dst);
         }
 
+        // The screen glow sits between the desk and the monitor (prototype DOM
+        // order: boot overlay -> glow -> monitor). The texture is a baked
+        // 0.28-alpha radial gradient; the per-frame flicker alpha-mods it.
+        if (i == kDeskGroupIndex + 1 && g_state.glow != nullptr) {
+            const float t7 = std::fmod(in.time_s, 7.0f);
+            SDL_SetTextureAlphaMod(
+                g_state.glow,
+                static_cast<Uint8>(std::clamp(FlickerOpacity(t7), 0.0f, 1.0f) * 255.0f));
+            // The glow div is 36%/26%/34%/30% of the art box, mapped through
+            // the desk transform (same math as screen_rect).
+            const SDL_FRect desk = DeskDest(out_w, out_h);
+            const SDL_FRect glow_dest{
+                desk.x + 0.36f * desk.w,
+                desk.y + 0.26f * desk.h,
+                0.34f * desk.w,
+                0.30f * desk.h,
+            };
+            SDL_RenderCopyF(renderer, g_state.glow, nullptr, &glow_dest);
+        }
+
         SDL_Texture* tex = g_state.layers[i];
         if (tex == nullptr) {
             continue;
@@ -748,6 +869,13 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             const float glint =
                 std::clamp(0.5f + 1.4f * g_state.cx - 0.6f * g_state.cy, 0.0f, 1.0f);
             SDL_SetTextureAlphaMod(tex, static_cast<Uint8>(glint * glint * 255.0f));
+        }
+
+        // screen-logo.svg alpha is driven per-frame by the caller's boot fade
+        // (U2); the static table alpha stays 1.0.
+        if (i == kScreenLogoIndex) {
+            SDL_SetTextureAlphaMod(
+                tex, static_cast<Uint8>(std::clamp(in.screen_logo_alpha, 0.0f, 1.0f) * 255.0f));
         }
 
         // Per-layer drift (prototype CSS keyframes drift/drift2): a slow
@@ -814,6 +942,21 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         const SDL_Rect dst{0, 0, out_w, out_h};
         SDL_RenderCopy(renderer, g_state.vignette, nullptr, &dst);
     }
+}
+
+SDL_FRect screen_rect(int out_w, int out_h) {
+    if (out_w <= 0 || out_h <= 0) {
+        return SDL_FRect{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    // Handoff README: the monitor screen is 38.86%/29.57%/28.56%/23.66% of the
+    // art box (left/top/w/h), mapped through the desk transform.
+    const SDL_FRect desk = DeskDest(out_w, out_h);
+    return SDL_FRect{
+        desk.x + 0.3886f * desk.w,
+        desk.y + 0.2957f * desk.h,
+        0.2856f * desk.w,
+        0.2366f * desk.h,
+    };
 }
 
 }  // namespace cosmic::ui::scene
