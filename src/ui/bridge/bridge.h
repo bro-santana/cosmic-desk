@@ -28,8 +28,10 @@ namespace cosmic::ui::bridge {
 
 // Caller-owned state, persists across frames (and across hide/show cycles).
 struct BridgeState {
-    // Seconds (time_s of the input) when the boot sequence started; -1 = not
-    // started yet (first draw_bridge call starts it).
+    // Seconds (time_s of the input) when the logo splash started; -1 = not
+    // started yet (the next draw_bridge call starts it). main.cpp resets it
+    // to -1 whenever the window is unhidden from the tray so the splash
+    // replays.
     double boot_start_s = -1.0;
     std::string selected;             // address of the selected card
     std::string renaming;             // address being renamed inline ("" = none)

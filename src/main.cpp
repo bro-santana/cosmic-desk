@@ -383,6 +383,10 @@ int main(int argc, char** argv) {
 
     cosmic::AppMode mode = start_hidden ? cosmic::AppMode::HiddenToTray : cosmic::AppMode::MainWindow;
     bool running = true;
+    // Set on the hidden->shown transition so the Bridge replays its logo
+    // splash (bridge_state is declared after the tray callbacks that need to
+    // request the replay, hence the flag instead of a direct reset).
+    bool replay_boot_splash = false;
     // Set when the tray Quit item is clicked, so main() can tell a tray quit
     // apart from other exits (plan M8.2: in service mode a tray quit must exit
     // with ERROR_SHUTDOWN_IN_PROGRESS so cosmicsvc stops instead of respawning
@@ -393,6 +397,9 @@ int main(int argc, char** argv) {
         asset_path(tray_icon_name()),
         {
             [&] {
+                if (mode == cosmic::AppMode::HiddenToTray) {
+                    replay_boot_splash = true;
+                }
                 mode = cosmic::AppMode::MainWindow;
                 SDL_ShowWindow(window);
                 SDL_RaiseWindow(window);
@@ -573,6 +580,9 @@ int main(int argc, char** argv) {
         // A second launch signaled us to show the window (plan M8.1): leave
         // the tray and raise the window, same as the tray Show item.
         if (cosmic::single_instance::poll_show_request()) {
+            if (mode == cosmic::AppMode::HiddenToTray) {
+                replay_boot_splash = true;
+            }
             mode = cosmic::AppMode::MainWindow;
             SDL_ShowWindow(window);
             SDL_RaiseWindow(window);
@@ -589,6 +599,9 @@ int main(int argc, char** argv) {
             g_pending_client = std::move(polled_client);
             show_pin_dialog = true;
             pin_result_ok = false;
+            if (mode == cosmic::AppMode::HiddenToTray) {
+                replay_boot_splash = true;
+            }
             mode = cosmic::AppMode::MainWindow;
             SDL_ShowWindow(window);
             SDL_RaiseWindow(window);
@@ -892,6 +905,11 @@ int main(int argc, char** argv) {
             auto_pair_pin ? session_status.pin : pairing.pin;
         // Only the explicit latch path has a sticky error.
         bridge_input.pairing_error = pair_error;
+        // Unhidden from the tray this frame: replay the monitor logo splash.
+        if (replay_boot_splash) {
+            bridge_state.boot_start_s = -1.0;
+            replay_boot_splash = false;
+        }
         const cosmic::ui::bridge::BridgeDrawResult bridge_result =
             cosmic::ui::bridge::draw_bridge(bridge_input, &bridge_state);
 

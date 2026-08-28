@@ -1,7 +1,7 @@
 // Cosmic Desk — Bridge UI overlay implementation (docs/UI_MIGRATION.md U2-U4).
 //
 // Draws the fullscreen ImGui window that sits above the parallax scene: the
-// monitor boot sequence (once per launch), the hosting beacon, and (U3) the
+// monitor logo splash (on launch and on unhide from tray), the hosting beacon, and (U3) the
 // machine cards orbiting the scene center, the bottom dock and the session
 // status. The window background is
 // fully transparent so the scene shows through; all geometry derives from the
@@ -31,12 +31,11 @@ namespace cosmic::ui::bridge {
 
 namespace {
 
-// Boot timing (docs/UI_MIGRATION.md §4): the five mono lines appear at
-// 0.3/1.0/1.7/2.4/3.1 s after boot start; the overlay clears at 4.4 s.
-constexpr double kBootDurationS = 4.4;
-constexpr double kBootLineTimesS[] = {0.3, 1.0, 1.7, 2.4, 3.1};
-
-// Screen-logo fade window after the boot overlay clears (U2).
+// Boot splash: the screen logo holds at full opacity, then fades out. (The
+// BIOS text sequence was removed by request — the splash is just the logo on
+// the monitor screen now.) Replays each time the window is unhidden from the
+// tray (main.cpp resets boot_start_s on that transition).
+constexpr double kLogoHoldS = 1.0;
 constexpr double kLogoFadeS = 1.4;
 
 // Beacon pulse period (prototype `beacon` keyframes).
@@ -826,7 +825,8 @@ BridgeAction DrawSessionStatus(const BridgeInput& in, const ImVec2& vp_size, flo
 BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     BridgeDrawResult result;
 
-    // The first call starts the boot sequence (once per launch).
+    // The first call after launch (or after the window is unhidden from the
+    // tray, which resets boot_start_s) starts the logo splash.
     if (state->boot_start_s < 0.0) {
         state->boot_start_s = in.time_s;
     }
@@ -854,65 +854,6 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
                      ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
-
-    // Boot sequence: dark overlay over the monitor screen + the five mono
-    // lines, each appearing at its own time after boot start.
-    if (t < kBootDurationS) {
-        // rgba(16,18,38,.9) — the design's deep indigo at 90% opacity.
-        const ImU32 boot_bg = ImGui::GetColorU32(
-            ImVec4(16.0f / 255.0f, 18.0f / 255.0f, 38.0f / 255.0f, 0.9f));
-        draw_list->AddRectFilled(ImVec2(scr.x, scr.y),
-                                 ImVec2(scr.x + scr.w, scr.y + scr.h), boot_bg);
-
-        // The LISTENING line reflects real host state: the configured port
-        // when hosting started, FAIL otherwise.
-        char listening[64];
-        if (in.hosting_ok) {
-            std::snprintf(listening, sizeof(listening),
-                          "LISTENING ON :%d ........ OK", in.port_base);
-        } else {
-            std::snprintf(listening, sizeof(listening),
-                          "LISTENING .............. FAIL");
-        }
-        const char* boot_lines[5] = {
-            "COSMIC DESK BIOS v2.6",
-            "GAMESTREAM CORE ............ OK",
-            "ENCODER .................... OK",
-            listening,
-            "BRIDGE ONLINE - WELCOME",
-        };
-
-        // First line at 6% of the screen height, lines spaced 22% apart,
-        // left-aligned at 5% of the screen width.
-        const float line_x = scr.x + 0.05f * scr.w;
-        const float line_y0 = scr.y + 0.06f * scr.h;
-        const float line_dy = 0.22f * scr.h;
-
-        ImGui::PushFont(cosmic::ui::FontMonoMedium());
-        // Boot font: clamp(8, 0.008*vw, 13) design px. The vw term must be in
-        // CSS px (out_w is device px, so divide by the UI scale), and the base
-        // font is 13px * scale, so the window font scale is design_px / 13.
-        const float boot_px = std::clamp(0.008f * out_w / scale, 8.0f, 13.0f);
-        ImGui::SetWindowFontScale(boot_px / 13.0f);
-        // BIOS-style diagnostics in the status green (design #8ac49c).
-        ImGui::PushStyleColor(ImGuiCol_Text, cosmic::ui::Rgba(cosmic::ui::kGreen));
-        for (int i = 0; i < 4; ++i) {
-            if (t >= kBootLineTimesS[i]) {
-                ImGui::SetCursorScreenPos(ImVec2(line_x, line_y0 + line_dy * i));
-                cosmic::ui::TextSpaced(boot_lines[i], 0.12f);
-            }
-        }
-        ImGui::PopStyleColor();
-        // The final line is always present from 3.1 s, in the data cyan.
-        if (t >= kBootLineTimesS[4]) {
-            ImGui::PushStyleColor(ImGuiCol_Text, cosmic::ui::Rgba(cosmic::ui::kCyan));
-            ImGui::SetCursorScreenPos(ImVec2(line_x, line_y0 + line_dy * 4));
-            cosmic::ui::TextSpaced(boot_lines[4], 0.12f);
-            ImGui::PopStyleColor();
-        }
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-    }
 
     // Hosting beacon (always): green dot + "HOSTING :port - n PAIRED" pill.
     // The prototype anchors BOTH on the art box (dot top-left 52.9%/55.4%,
@@ -1141,12 +1082,12 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     ImGui::End();
     ImGui::PopStyleColor();
 
-    // Screen-logo opacity for the scene: full during boot, then fading to 0
-    // over the 1.4s window after the overlay clears at 4.4s.
+    // Screen-logo opacity for the scene: full while the splash holds, then
+    // fading to 0 over the 1.4s window.
     float screen_logo_alpha = 1.0f;
-    if (t >= kBootDurationS) {
+    if (t >= kLogoHoldS) {
         screen_logo_alpha = static_cast<float>(
-            std::clamp((kBootDurationS + kLogoFadeS - t) / kLogoFadeS, 0.0, 1.0));
+            std::clamp((kLogoHoldS + kLogoFadeS - t) / kLogoFadeS, 0.0, 1.0));
     }
     result.screen_logo_alpha = screen_logo_alpha;
     return result;
