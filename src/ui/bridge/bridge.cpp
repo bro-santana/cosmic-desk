@@ -384,63 +384,10 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     // block selection.
     bool widget_hovered = false;
 
-    if (state->renaming == host.address) {
-        // Inline rename: input + OK replaces the action row (Enter saves, Esc
-        // cancels).
-        ImGui::PushFont(cosmic::ui::FontMonoRegular());
-        ImGui::SetWindowFontScale(11.0f / 13.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7.0f * scale, 5.0f * scale));
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgba(kPanelInput));
-        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
-        // Measure the OK button so the input fills the remaining width.
-        ImGui::PushFont(cosmic::ui::FontMonoBold());
-        ImGui::SetWindowFontScale(10.0f / 13.0f);
-        const ImVec2 ok_label = ImGui::CalcTextSize("OK");
-        const ImVec2 ok_size(ok_label.x + 18.0f * scale, ok_label.y + 10.0f * scale);
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-        ImGui::SetCursorScreenPos(ImVec2(content_x, row_y));
-        // Focus the input on the frame it appears so typing starts immediately.
-        // The per-window flag is cleared when the rename ends, so the next
-        // rename re-focuses.
-        ImGuiStorage* storage = ImGui::GetStateStorage();
-        const ImGuiID focus_key = ImGui::GetID("##rename_focus");
-        if (storage->GetInt(focus_key, 0) == 0) {
-            ImGui::SetKeyboardFocusHere();
-            storage->SetInt(focus_key, 1);
-        }
-        ImGui::SetNextItemWidth(content_right - content_x - ok_size.x - 6.0f * scale);
-        const bool enter = ImGui::InputText("##rename", state->rename_buf,
-                                            sizeof(state->rename_buf),
-                                            ImGuiInputTextFlags_EnterReturnsTrue);
-        widget_hovered |= ImGui::IsItemHovered();  // the rename input
-        const bool esc = ImGui::IsKeyPressed(ImGuiKey_Escape);
-        ImGui::PopStyleColor(2);
-        ImGui::PopStyleVar();
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-        // OK button (green), right of the input.
-        ImGui::PushFont(cosmic::ui::FontMonoBold());
-        ImGui::SetWindowFontScale(10.0f / 13.0f);
-        bool ok_hovered = false;
-        const bool ok = DrawButton("##ok", "OK", 0.0f,
-                                   ImVec2(content_right - ok_size.x, row_y), ok_size,
-                                   kGreenBtn, kGreenHover, 0, 0, kText, kText, scale,
-                                   &ok_hovered);
-        widget_hovered |= ok_hovered;
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-        if (enter || ok) {
-            action.kind = BridgeAction::Edit;
-            action.address = host.address;
-            action.nickname = NormalizeNickname(state->rename_buf);
-            state->renaming.clear();
-            storage->SetInt(focus_key, 0);
-        } else if (esc) {
-            state->renaming.clear();
-            storage->SetInt(focus_key, 0);
-        }
-    } else {
+    // The inline rename edits the NAME in the border-tab title (drawn after
+    // the child, below) — the action row stays as-is while renaming, so the
+    // edit visibly targets the machine's name rather than the last-link line.
+    {
         // CONNECT (or PAIR for unpaired machines) + rename button, right
         // aligned; the last-connected line ellipsizes into the remaining width.
         const bool linking = in.connecting_address == host.address;
@@ -634,26 +581,75 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     const float tab_h = 14.0f * scale;
     const float tab_cy = tab_top + tab_h * 0.5f;
 
-    // Name, ellipsized to the tab's max width (62% of the card).
+    // Name, ellipsized to the tab's max width (62% of the card) — or, while
+    // renaming, an inline InputText occupying that full width in the tab
+    // itself, so the edit visibly targets the machine's name. Enter or focus
+    // loss saves, Esc cancels.
     ImGui::PushFont(cosmic::ui::FontMonoBold());
     ImGui::SetWindowFontScale(11.0f / 13.0f);
+    const bool renaming = state->renaming == host.address;
     const float name_max_w = 0.62f * w - 14.0f * scale - 7.0f * scale - 6.0f * scale;
     const std::string name = host.nickname.empty() ? host.address : host.nickname;
     const std::string name_ell = Ellipsize(name, 0.08f, name_max_w);
     const ImVec2 name_size = cosmic::ui::TextSpacedSize(name_ell.c_str(), 0.08f);
+    const float name_w = renaming ? name_max_w : name_size.x;
     const float tab_x = pos.x + 8.0f * scale;
-    const float tab_w = 14.0f * scale + 7.0f * scale + 6.0f * scale + name_size.x;
+    const float tab_w = 14.0f * scale + 7.0f * scale + 6.0f * scale + name_w;
     draw_list->AddRectFilled(ImVec2(tab_x, tab_top),
                              ImVec2(tab_x + tab_w, tab_top + tab_h),
                              ImGui::GetColorU32(Rgba(kBg)));
     // Status dot (7px) + soft glow.
     const ImVec2 dot_center(tab_x + 7.0f * scale + 3.5f * scale, tab_cy);
     draw_list->AddCircleFilled(dot_center, 3.5f * scale, ImGui::GetColorU32(Rgba(state_color)));
-    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
-    ImGui::SetCursorScreenPos(ImVec2(tab_x + 14.0f * scale + 7.0f * scale + 6.0f * scale,
-                                     tab_cy - name_size.y * 0.5f));
-    cosmic::ui::TextSpaced(name_ell.c_str(), 0.08f);
-    ImGui::PopStyleColor();
+    const float name_x = tab_x + 14.0f * scale + 7.0f * scale + 6.0f * scale;
+    if (renaming) {
+        // Widgets here land in the parent Bridge window (the child ended
+        // above), so scope the IDs per card.
+        ImGui::PushID(host.address.c_str());
+        const float frame_h = ImGui::GetFontSize() + 4.0f * scale;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(4.0f * scale, 2.0f * scale));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgba(kPanelInput));
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+        ImGui::SetCursorScreenPos(ImVec2(name_x, tab_cy - frame_h * 0.5f));
+        ImGui::SetNextItemWidth(name_max_w);
+        // Focus the input on the frame it appears so typing starts
+        // immediately; the flag clears when the rename ends so the next
+        // rename re-focuses.
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+        const ImGuiID focus_key = ImGui::GetID("##rename_focus");
+        if (storage->GetInt(focus_key, 0) == 0) {
+            ImGui::SetKeyboardFocusHere();
+            storage->SetInt(focus_key, 1);
+        }
+        const bool enter = ImGui::InputText(
+            "##rename_tab", state->rename_buf, sizeof(state->rename_buf),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        const bool esc = ImGui::IsKeyPressed(ImGuiKey_Escape);
+        const bool deactivated = ImGui::IsItemDeactivated();
+        // kPurple focus rect, matching the other inline edits.
+        ImGui::GetWindowDrawList()->AddRect(
+            ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+            ImGui::GetColorU32(Rgba(kPurple)), 0.0f, 0, 1.0f * scale);
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar();
+        if (esc) {
+            state->renaming.clear();
+            storage->SetInt(focus_key, 0);
+        } else if (enter || deactivated) {
+            action.kind = BridgeAction::Edit;
+            action.address = host.address;
+            action.nickname = NormalizeNickname(state->rename_buf);
+            state->renaming.clear();
+            storage->SetInt(focus_key, 0);
+        }
+        ImGui::PopID();
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+        ImGui::SetCursorScreenPos(ImVec2(name_x, tab_cy - name_size.y * 0.5f));
+        cosmic::ui::TextSpaced(name_ell.c_str(), 0.08f);
+        ImGui::PopStyleColor();
+    }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
 
