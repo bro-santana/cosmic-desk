@@ -14,6 +14,7 @@
 ; location (%LocalAppData%\Programs\...) would let any process of that user
 ; swap the exe/DLLs and run arbitrary code as SYSTEM. Program Files is
 ; admin-only, so the machine-wide install is the safe home for the service.
+; The service task is hidden (Check: IsAdminInstallMode) in per-user mode.
 ;
 ; Usage (from the repo root, after configuring CMake and running make-zip.ps1):
 ;   ISCC.exe packaging\windows\installer.iss
@@ -61,7 +62,10 @@ Source: "..\..\dist\CosmicDesk\*"; DestDir: "{app}"; Flags: ignoreversion recurs
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
-Name: "service"; Description: "Install the Cosmic Desk service (recommended: lets you stream UAC prompts, the lock screen and the logon screen; requires the machine-wide install)"; GroupDescription: "Additional components:"
+; Check: IsAdminInstallMode hides the task entirely for per-user installs:
+; the LocalSystem service must never execute binaries from a user-writable
+; folder (see the file header).
+Name: "service"; Description: "Install the Cosmic Desk service (recommended: lets you stream UAC prompts, the lock screen and the logon screen)"; GroupDescription: "Additional components:"; Check: IsAdminInstallMode
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--shortcut"
