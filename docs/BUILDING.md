@@ -112,7 +112,17 @@ shortcuts and an uninstaller. It defaults to a machine-wide install under
 wizard page (also reachable as `/CURRENTUSER`). The Cosmic Desk service task
 is checked by default and only applies to the machine-wide install — the
 LocalSystem service must never run binaries from a user-writable per-user
-folder. No version is passed on the command line — it comes from
+folder.
+
+Because the two scopes register under different registry hives
+(`HKLM\...\Uninstall\{AppId}_is1` vs `HKCU\...`), an install of one scope does
+not replace an install of the other — it just adds a second Apps & Features
+entry, and the older one keeps its old name and version forever. Releases up to
+`v0.1.5-alpha` were per-user and everything since is machine-wide, so that
+transition hits real upgrades. The installer's `[Code]` section detects an
+install in the other scope and offers to uninstall it before continuing.
+
+No version is passed on the command line — it comes from
 `build\packaging\windows\version.iss`, so the build must be configured first
 (see [Versioning](#versioning)). The installer is unsigned; SmartScreen will
 warn until a code-signing certificate is set up.

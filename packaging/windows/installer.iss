@@ -86,3 +86,91 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 ; Same gating as [Run]: only a machine-wide install can own the service.
 ; The script exits 0 without elevating when the service does not exist.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-service.ps1"" -ServiceExe ""{app}\tools\cosmicsvc.exe"""; Check: IsAdminInstallMode; Flags: runhidden
+
+[Code]
+{ Must match AppId above. Inno registers the uninstall entry under this name in
+  HKCU for a per-user install and in HKLM for a machine-wide one - two separate
+  keys, not one. }
+const
+  UninstKey =
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8B6D4A2F-1C3E-4A5B-9D7F-2E4C6A8B0D1E}_is1';
+
+{ Releases up to v0.1.5-alpha shipped PrivilegesRequired=lowest and so
+  registered under HKCU; v0.2.2-alpha onwards installs machine-wide and
+  registers under HKLM. Because Inno keys the entry by AppId *within a hive*,
+  installing one over the other leaves the older install's entry and files
+  untouched, and Apps & Features lists a stale Cosmic Desk with the old version
+  indefinitely. The same happens whenever the install-mode dialog is answered
+  differently between two runs, so this is not only a one-off migration.
+
+  ArchitecturesInstallIn64BitMode makes this a 64-bit install on x64, so plain
+  HKEY_LOCAL_MACHINE is the 64-bit view - the same view Setup writes to.
+
+  Known gap: PrepareToInstall runs after elevation, so HKEY_CURRENT_USER is the
+  ELEVATING account's profile. If the user elevates with a different admin
+  account, a per-user install belonging to the logged-on user is invisible here
+  and has to be removed by hand. Same account + UAC, the common case, is fine. }
+function OtherScopeRootKey: Integer;
+begin
+  if IsAdminInstallMode then
+    Result := HKEY_CURRENT_USER
+  else
+    Result := HKEY_LOCAL_MACHINE;
+end;
+
+function OtherScopeUninstallString(var UninstallString: String): Boolean;
+begin
+  Result := RegQueryStringValue(OtherScopeRootKey, UninstKey, 'UninstallString',
+                                UninstallString) and (UninstallString <> '');
+end;
+
+function OtherScopeInstalled: Boolean;
+var
+  Ignored: String;
+begin
+  Result := OtherScopeUninstallString(Ignored);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  UninstallString, OtherName: String;
+  ResultCode, Waited: Integer;
+begin
+  Result := '';
+  if not OtherScopeUninstallString(UninstallString) then
+    Exit;
+
+  if not RegQueryStringValue(OtherScopeRootKey, UninstKey, 'DisplayName', OtherName) then
+    OtherName := '{#AppName}';
+
+  if SuppressibleMsgBox('Another copy of Cosmic Desk is already installed, in the'
+       + ' other install scope:' + #13#10#13#10 + OtherName + #13#10#13#10
+       + 'Leaving it in place would leave a second, permanently stale entry in'
+       + ' Apps & Features. Remove it before continuing?',
+       mbConfirmation, MB_YESNO, IDYES) <> IDYES then
+  begin
+    Result := 'The existing installation must be removed before Setup can continue.';
+    Exit;
+  end;
+
+  if not Exec(RemoveQuotes(UninstallString), '/SILENT /NORESTART /SUPPRESSMSGBOXES',
+              '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Result := 'Could not run the existing uninstaller: ' + SysErrorMessage(ResultCode);
+    Exit;
+  end;
+
+  { unins000.exe relaunches itself from a copy in the temp directory and the
+    process we waited on exits immediately, so a successful Exec proves
+    nothing. Poll the registry until the entry is actually gone. }
+  Waited := 0;
+  while OtherScopeInstalled and (Waited < 60000) do
+  begin
+    Sleep(500);
+    Waited := Waited + 500;
+  end;
+
+  if OtherScopeInstalled then
+    Result := 'The existing installation was not removed. Uninstall Cosmic Desk from'
+              + ' Apps & Features, then run Setup again.';
+end;
