@@ -18,6 +18,13 @@ namespace {
 // at any size; 13 px is its design size and therefore our 100% baseline.
 constexpr float kBaseFontPx = 13.0f;
 
+// Glyph ranges: Basic Latin + Latin-1 Supplement (the design's `·` middot,
+// U+00B7) plus the general-punctuation slice with the dashes and ellipsis
+// (U+2013 en dash .. U+2026 ellipsis). IBM Plex covers all of these; symbols
+// it lacks (pencil, diamond, close X) stay drawn as ImDrawList primitives.
+// The atlas keeps this pointer until Build(), so the array must be static.
+constexpr ImWchar kGlyphRanges[] = {0x0020, 0x00FF, 0x2013, 0x2026, 0};
+
 ImFont* g_sans_regular = nullptr;
 ImFont* g_sans_medium = nullptr;
 ImFont* g_sans_semibold = nullptr;
@@ -61,6 +68,7 @@ void LoadFonts(float ui_scale) {
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig cfg;
     cfg.SizePixels = std::floor(kBaseFontPx * ui_scale);
+    cfg.GlyphRanges = kGlyphRanges;
 
     g_sans_regular = LoadFace(io.Fonts, cfg, "IBMPlexSans-Regular.ttf", true);
     g_sans_medium = LoadFace(io.Fonts, cfg, "IBMPlexSans-Medium.ttf", false);

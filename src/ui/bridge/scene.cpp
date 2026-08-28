@@ -145,6 +145,17 @@ struct Twinkle {
     float delay;    // seconds
 };
 
+// One hyperspace streak particle (design handoff v2 warp). Radii/positions are
+// device px derived from the viewport; `width` is a design-px base multiplied
+// by scale() at draw time.
+struct WarpStar {
+    float ang;    // radial direction, radians
+    float r;      // head distance from the origin, device px
+    float sp;     // speed factor 0.6..2.4
+    float width;  // base line width, design px 0.5..1.9
+    bool blue;    // 25% ice-blue rgb(178,208,255), rest white
+};
+
 // Module state. All textures are owned here and rebuilt on resize.
 struct State {
     bool initialized = false;
@@ -172,6 +183,12 @@ struct State {
     float warp_target = 0.0f;
     double flash_start_s = -1.0;
     bool flash_pending = false;
+    // Hyperspace streak field (handoff v2): particles live only while the warp
+    // is active (warp_t >= 0.005); the vector is dropped when it ends so the
+    // next connect gets a fresh burst. warp_seed drives spawn/respawn
+    // randomness (visual only, no determinism requirement).
+    std::vector<WarpStar> warp_stars;
+    uint64_t warp_seed = 1234;
 };
 
 State g_state;
@@ -593,6 +610,73 @@ void FlushDashes(SDL_Renderer* renderer) {
     g_dash_indices.clear();
 }
 
+// Hyperspace streak field (handoff v2): 520 particles radiating from behind
+// the monitor (origin 50%/45% of the viewport), drawn between the shooting
+// star and the warp flash so the desk group and all UI occlude them. Replicates
+// the prototype's drawWarpStreaks() 1:1, with the per-frame radial step
+// dt-corrected to the nominal 60fps the prototype assumes. Lines are emitted
+// as rotated quads through the shared geometry scratch buffers (the handoff's
+// own SDL2 note: round caps are not worth a texture at 0.5-3px widths).
+void UpdateAndDrawWarpStreaks(SDL_Renderer* renderer, int out_w, int out_h,
+                              float dt) {
+    const float w = g_state.warp_t;
+    if (w < 0.005f) {
+        // Warp over: drop the field so the next connect starts a fresh burst.
+        if (!g_state.warp_stars.empty()) {
+            g_state.warp_stars.clear();
+            g_state.warp_stars.shrink_to_fit();
+        }
+        return;
+    }
+
+    const auto rnd = [] {
+        g_state.warp_seed = (g_state.warp_seed * 16807u) % 2147483647u;
+        return static_cast<float>(g_state.warp_seed) / 2147483647.0f;
+    };
+    const float diag = std::hypot(static_cast<float>(out_w),
+                                  static_cast<float>(out_h));
+    if (g_state.warp_stars.empty()) {
+        g_state.warp_stars.reserve(520);
+        for (int i = 0; i < 520; ++i) {
+            WarpStar s;
+            s.ang = rnd() * 2.0f * 3.14159265f;
+            s.r = 6.0f + std::pow(rnd(), 0.6f) * diag * 0.55f;
+            s.sp = 0.6f + rnd() * 1.8f;
+            s.width = 0.5f + rnd() * 1.4f;
+            s.blue = rnd() < 0.25f;
+            g_state.warp_stars.push_back(s);
+        }
+    }
+
+    const float origin_x = 0.5f * out_w;
+    const float origin_y = 0.45f * out_h;
+    const float max_r = diag * 0.62f;
+    const float layer_alpha = std::min(1.0f, w * 2.2f);
+    const float step_frames = dt * 60.0f;  // prototype step is per 60fps frame
+    const float scale = cosmic::ui::scale();
+
+    for (WarpStar& s : g_state.warp_stars) {
+        s.r += s.sp * w * (2.0f + s.r * 0.045f) * step_frames;
+        if (s.r > max_r) {
+            s.r = 4.0f + rnd() * 30.0f;
+            s.ang = rnd() * 2.0f * 3.14159265f;
+        }
+        const float cos_a = std::cos(s.ang);
+        const float sin_a = std::sin(s.ang);
+        const float tail = std::max(2.0f, s.r - (s.r * 0.55f + 30.0f) * w * s.sp);
+        const float alpha = layer_alpha * std::min(1.0f, 0.15f + s.r / max_r);
+        const float width = s.width * (0.6f + (s.r / max_r) * 1.6f) * scale;
+        const Uint8 cr = s.blue ? 178 : 255;
+        const Uint8 cg = s.blue ? 208 : 255;
+        const Uint8 cb = 255;
+        AppendDashQuad(origin_x + cos_a * tail, origin_y + sin_a * tail,
+                       origin_x + cos_a * s.r, origin_y + sin_a * s.r, width,
+                       cr, cg, cb,
+                       static_cast<Uint8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
+    }
+    FlushDashes(renderer);
+}
+
 // Returns the dash-pattern phase at arc length `len`, normalized to [0, period)
 // so a negative dash_offset (allowed, e.g. the beams' drifting dashoffset)
 // still lands in the correct window. A point is "on" when phase < dash_on.
@@ -851,6 +935,8 @@ void shutdown(SDL_Renderer* renderer) {
     g_state.warp_target = 0.0f;
     g_state.flash_start_s = -1.0;
     g_state.flash_pending = false;
+    g_state.warp_stars.clear();
+    g_state.warp_stars.shrink_to_fit();
     g_state.initialized = false;
 }
 
@@ -1018,6 +1104,13 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             }
         }
 
+        // The hyperspace streak field sits between the shooting star and the
+        // warp flash (handoff v2 DOM order: shooting star -> canvas -> flash
+        // -> desk group), so the desk and all UI occlude it.
+        if (i == kDeskGroupIndex) {
+            UpdateAndDrawWarpStreaks(renderer, out_w, out_h, dt);
+        }
+
         // The warp flash sits between the sky layers and the desk group
         // (UI_MIGRATION A3), matching the prototype's DOM. The texture is
         // opaque white where lit, so alpha-mod fades the whole thing; the
@@ -1127,6 +1220,20 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             const NebulaSway& s = kNebulaSway[layer.sway];
             float tx, ty, rot, sx, sy;
             SampleSway(s, in.time_s, tx, ty, rot, sx, sy);
+
+            // Nebula warp fade (handoff v2): dim the band toward 12.5% of its
+            // base alpha (.96 -> .12, the prototype's 1.6s CSS ease). Driven
+            // from the warp progress rather than a wall clock: the Bridge
+            // hands off to the viewer at warp 0.95, so a time-based 1.6s fade
+            // would barely start before the scene disappears. Full dim by
+            // warp 0.85 keeps the whole transition on screen, and the warp-back
+            // brightens it symmetrically. Re-applied every frame (the
+            // rasterize-time alpha mod stands only at warp 0).
+            const float f = std::min(1.0f, g_state.warp_t / 0.85f);
+            const float eased = f * f * (3.0f - 2.0f * f);
+            const float band_alpha = base_alpha * (1.0f - 0.875f * eased);
+            SDL_SetTextureAlphaMod(
+                tex, static_cast<Uint8>(std::clamp(band_alpha, 0.0f, 1.0f) * 255.0f));
 
             // Band center on screen. s.fx/s.fy are stored as canvas PERCENT
             // (52.4 = 52.4%), so divide by 100 to get a 0..1 fraction of the

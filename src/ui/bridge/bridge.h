@@ -51,6 +51,12 @@ struct BridgeState {
     // Seconds (time_s of the input) when the pairing PIN first became visible;
     // -1 = PIN not showing. Anchors the PIN panel's slide-up and scan cycle.
     double pin_shown_at_s = -1.0;
+    // Inline stepper editing (Settings panel): id of the stepper whose value
+    // is being typed directly ("" = none, else "fps"/"port"), and the digits
+    // buffer. Entered by clicking the value between the -/+ buttons; committed
+    // on Enter or focus loss (clamped to the stepper's range), Esc cancels.
+    std::string editing_stepper;
+    char stepper_edit_buf[8] = {};
     // Hover scale (polish pass 2): per-card current scale factor, keyed by
     // address (missing = 1.0). Eased toward the hover target each frame.
     std::map<std::string, float> card_scale;

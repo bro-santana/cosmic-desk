@@ -523,36 +523,34 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
             const auto sub = [](const ImVec2& a, const ImVec2& b) {
                 return ImVec2(a.x - b.x, a.y - b.y);
             };
-            const ImVec2 tip = add(pc, mul(ax, half));             // nib point
-            const ImVec2 back = sub(pc, mul(ax, half));            // eraser end
-            const ImVec2 s1 = sub(tip, mul(ax, 3.5f * scale));     // nib base
-            const ImVec2 s0 = add(back, mul(ax, 3.0f * scale));    // shaft back
+            // Contiguous segments back -> tip, total length exactly 2*half:
+            // eraser (back .. e1), ferrule (e1 .. f1), shaft (f1 .. s1), nib
+            // triangle (s1 .. tip). Shared segment boundaries leave no gaps,
+            // nothing overhangs past `back`, and the nib tapers from the
+            // shaft's own width (no flare).
+            const ImVec2 tip = add(pc, mul(ax, half));           // nib point
+            const ImVec2 back = sub(pc, mul(ax, half));          // eraser end
+            const ImVec2 e1 = add(back, mul(ax, 2.6f * scale));  // eraser/ferrule
+            const ImVec2 f1 = add(back, mul(ax, 4.2f * scale));  // ferrule/shaft
+            const ImVec2 s1 = sub(tip, mul(ax, 4.5f * scale));   // shaft/nib
+            const float hw_back = hw * 1.15f;  // eraser + ferrule sit wider
+            // Eraser: small block at the very back, lighter tone.
+            card_list->AddQuadFilled(add(back, mul(nm, hw_back)),
+                                     sub(back, mul(nm, hw_back)),
+                                     sub(e1, mul(nm, hw_back)),
+                                     add(e1, mul(nm, hw_back)), eraser_col);
+            // Ferrule: metal band between the eraser and the shaft.
+            card_list->AddQuadFilled(add(e1, mul(nm, hw_back)),
+                                     sub(e1, mul(nm, hw_back)),
+                                     sub(f1, mul(nm, hw_back)),
+                                     add(f1, mul(nm, hw_back)), ferrule_col);
             // Shaft.
-            card_list->AddQuadFilled(add(s0, mul(nm, hw)), sub(s0, mul(nm, hw)),
+            card_list->AddQuadFilled(add(f1, mul(nm, hw)), sub(f1, mul(nm, hw)),
                                      sub(s1, mul(nm, hw)), add(s1, mul(nm, hw)),
                                      pencil_col);
-            // Nib: triangle from the shaft front to the point.
-            card_list->AddTriangleFilled(add(s1, mul(nm, hw * 1.15f)),
-                                         sub(s1, mul(nm, hw * 1.15f)), tip,
-                                         pencil_col);
-            // Ferrule: a short, slightly wider metal band at the shaft back.
-            card_list->AddQuadFilled(add(s0, mul(nm, hw * 1.25f)),
-                                     sub(s0, mul(nm, hw * 1.25f)),
-                                     sub(add(back, mul(ax, 1.2f * scale)),
-                                         mul(nm, hw * 1.25f)),
-                                     add(add(back, mul(ax, 1.2f * scale)),
-                                         mul(nm, hw * 1.25f)),
-                                     ferrule_col);
-            // Eraser: small block at the very back, lighter tone.
-            card_list->AddQuadFilled(add(add(back, mul(ax, 1.2f * scale)),
-                                         mul(nm, hw * 1.35f)),
-                                     sub(add(back, mul(ax, 1.2f * scale)),
-                                         mul(nm, hw * 1.35f)),
-                                     sub(sub(back, mul(ax, 1.6f * scale)),
-                                         mul(nm, hw * 1.35f)),
-                                     add(sub(back, mul(ax, 1.6f * scale)),
-                                         mul(nm, hw * 1.35f)),
-                                     eraser_col);
+            // Nib: triangle tapering from the shaft's front edge to the point.
+            card_list->AddTriangleFilled(add(s1, mul(nm, hw)),
+                                         sub(s1, mul(nm, hw)), tip, pencil_col);
         }
 
         // CONNECT (green) or PAIR (ghost).
@@ -916,18 +914,25 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
         ImGui::PopFont();
     }
 
-    // Hosting beacon (always): green dot + "HOSTING :port - n PAIRED" pill at
-    // 52.9%/55.4% of the monitor screen rect.
-    const ImVec2 beacon(scr.x + 0.529f * scr.w, scr.y + 0.554f * scr.h);
+    // Hosting beacon (always): green dot + "HOSTING :port - n PAIRED" pill.
+    // The prototype anchors BOTH on the art box (dot top-left 52.9%/55.4%,
+    // pill top-left 54.2%/55.0%) — that puts them below the screen, on the
+    // monitor stand. Convert art-box fractions through the screen rect the
+    // same way as the tether-beam target (the screen rect is 38.86/29.57/
+    // 28.56/23.66% of the desk-group dest, which IS the on-screen art box).
+    const auto art_to_screen = [&scr](float ax, float ay) {
+        return ImVec2(scr.x + ((ax - 0.3886f) / 0.2856f) * scr.w,
+                      scr.y + ((ay - 0.2957f) / 0.2366f) * scr.h);
+    };
 
-    // Dot: 0.55% of the ART-BOX width (the screen rect is 28.56% of the art
-    // box, and the desk layer is drawn at es 1.03 — undo that to recover the
-    // true art-box width). screen_rect() returns device px, so divide by the
-    // UI scale to get design px before applying the design ratio; the size is
-    // then scaled back to device px once (min 2 design-px diameter).
-    const float art_w = scr.w / (kScreenRectW * kDeskEs * scale);
-    const float dot_px = kDotArtW * art_w;
-    const float dot_radius = std::max(dot_px * 0.5f, 1.0f) * scale;
+    // Dot: 0.55% of the art-box width (aspect 1), so 0.0055/0.2856 of the
+    // screen rect's width in device px; floored at a 1*scale radius so it
+    // never vanishes in a small window. The anchor is the dot's TOP-LEFT
+    // (prototype div), so the circle center is top-left + radius.
+    const float dot_radius =
+        std::max(kDotArtW / kScreenRectW * scr.w * 0.5f, 1.0f * scale);
+    const ImVec2 dot_tl = art_to_screen(0.529f, 0.554f);
+    const ImVec2 beacon(dot_tl.x + dot_radius, dot_tl.y + dot_radius);
 
     // 2.6s pulse, eased 0..1 (prototype `beacon` keyframes).
     const float pulse =
@@ -942,9 +947,10 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     draw_list->AddCircleFilled(beacon, dot_radius, ImGui::GetColorU32(green));
 
     // Pill: mono text on a dark rounded rect, sized to the text via
-    // TextSpacedSize plus 6x2 design px padding.
+    // TextSpacedSize plus 6x2 design px padding. The middot (U+00B7, "\xc2\xb7"
+    // in UTF-8) is in the atlas since the Latin-1 glyph range was added.
     char pill_text[64];
-    std::snprintf(pill_text, sizeof(pill_text), "HOSTING :%d - %d PAIRED",
+    std::snprintf(pill_text, sizeof(pill_text), "HOSTING :%d \xc2\xb7 %d PAIRED",
                   in.port_base, in.paired_count);
     ImGui::PushFont(cosmic::ui::FontMonoRegular());
     ImGui::SetWindowFontScale(9.0f / 13.0f);
@@ -953,8 +959,9 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     const float pad_y = 2.0f * scale;
     const ImVec2 pill_size(pill_text_size.x + 2.0f * pad_x,
                            pill_text_size.y + 2.0f * pad_y);
-    const ImVec2 pill_min(beacon.x + dot_radius + 8.0f * scale,
-                          beacon.y - pill_size.y * 0.5f);
+    // Pill top-left at 54.2%/55.0% of the art box (prototype anchors it
+    // absolutely, not relative to the dot).
+    const ImVec2 pill_min = art_to_screen(0.542f, 0.550f);
     const ImVec2 pill_max(pill_min.x + pill_size.x, pill_min.y + pill_size.y);
     // rgba(16,18,38,.85) — the design's deep indigo at 85% opacity.
     const ImU32 pill_bg = ImGui::GetColorU32(

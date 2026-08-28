@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "ui/bridge/bridge.h"
@@ -150,9 +151,13 @@ bool DrawButton(const char* id, const char* label, float tracking_em,
 // Draws one -/+ stepper: 30 px buttons around a centered mono 13 value.
 // `value` is the current value; a click steps by `step` within [min,max] and
 // emits `kind` with the new value (only when the value actually changes).
+// The value itself is click-to-edit: clicking it swaps in an InputText
+// (digits only), Enter or focus loss commits (clamped to [min,max] but NOT
+// snapped to `step` — the point of typing is arbitrary values like 72 fps),
+// Esc cancels. Edit state lives in BridgeState so it survives frames.
 void DrawStepper(const char* id, int value, int step, int min, int max,
                  BridgeAction::Kind kind, const ImVec2& pos, float col_w,
-                 float scale, BridgeAction* out_action) {
+                 float scale, BridgeState* state, BridgeAction* out_action) {
     const ImVec2 btn_size(kStepperBtnW * scale, kStepperH * scale);
     const ImU32 border = ImGui::GetColorU32(Rgba(kBorder));
     const ImU32 border_hover = ImGui::GetColorU32(Rgba(kPurple));
@@ -181,15 +186,90 @@ void DrawStepper(const char* id, int value, int step, int min, int max,
             out_action->value = next;
         }
     }
-    // Value, mono 13, centered between the buttons.
-    const std::string value_text = std::to_string(value);
-    const ImVec2 value_size = cosmic::ui::TextSpacedSize(value_text.c_str(), 0.0f);
+    // Value, mono 13, centered between the buttons — plain text normally, an
+    // InputText while this stepper is being edited.
     const float value_w = col_w - 2.0f * btn_size.x;
-    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
-    ImGui::SetCursorScreenPos(ImVec2(pos.x + btn_size.x + (value_w - value_size.x) * 0.5f,
-                                     pos.y + (kStepperH * scale - value_size.y) * 0.5f));
-    cosmic::ui::TextSpaced(value_text.c_str(), 0.0f);
-    ImGui::PopStyleColor();
+    const ImVec2 value_pos(pos.x + btn_size.x, pos.y);
+    // The hotspot and the InputText need DISTINCT ImGui IDs: sharing one makes
+    // the hotspot's press-active state read as the InputText deactivating on
+    // its first frame, which insta-commits and exits edit mode.
+    char edit_id[24];
+    char hot_id[24];
+    std::snprintf(edit_id, sizeof(edit_id), "##%s_edit", id);
+    std::snprintf(hot_id, sizeof(hot_id), "##%s_hot", id);
+    if (state->editing_stepper == id) {
+        // Frame padding sized so the input's frame height equals the stepper
+        // row; styled like the Pair modal inputs (kPanelInput bg, kPurple
+        // focus border drawn manually after the item).
+        const float pad_y =
+            std::max(0.0f, (kStepperH * scale - ImGui::GetFontSize()) * 0.5f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(6.0f * scale, pad_y));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgba(kPanelInput));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Rgba(kPanelInput));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Rgba(kPanelInput));
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+        ImGui::SetCursorScreenPos(value_pos);
+        ImGui::SetNextItemWidth(value_w);
+        // Focus the input once, on the frame after the value was clicked
+        // (same ImGuiStorage pattern as the card rename in bridge.cpp).
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+        const ImGuiID focus_key = ImGui::GetID(edit_id);
+        if (storage->GetInt(focus_key, 0) == 0) {
+            ImGui::SetKeyboardFocusHere();
+            storage->SetInt(focus_key, 1);
+        }
+        const bool entered = ImGui::InputText(
+            edit_id, state->stepper_edit_buf, sizeof(state->stepper_edit_buf),
+            ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll |
+                ImGuiInputTextFlags_EnterReturnsTrue);
+        const bool escaped = ImGui::IsKeyPressed(ImGuiKey_Escape);
+        const bool deactivated = ImGui::IsItemDeactivated();
+        // kPurple focus rect over the frame, like the Pair modal inputs.
+        ImGui::GetWindowDrawList()->AddRect(
+            ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+            ImGui::GetColorU32(Rgba(kPurple)), 0.0f, 0, 1.0f * scale);
+        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar();
+        if (escaped) {
+            state->editing_stepper.clear();
+            storage->SetInt(focus_key, 0);
+        } else if (entered || deactivated) {
+            const long parsed = std::strtol(state->stepper_edit_buf, nullptr, 10);
+            if (state->stepper_edit_buf[0] != '\0') {
+                const int next = static_cast<int>(
+                    std::clamp(parsed, static_cast<long>(min), static_cast<long>(max)));
+                if (next != value) {
+                    out_action->kind = kind;
+                    out_action->value = next;
+                }
+            }
+            state->editing_stepper.clear();
+            storage->SetInt(focus_key, 0);
+        }
+    } else {
+        const std::string value_text = std::to_string(value);
+        const ImVec2 value_size = cosmic::ui::TextSpacedSize(value_text.c_str(), 0.0f);
+        // Click-to-edit hotspot over the whole value area.
+        ImGui::SetCursorScreenPos(value_pos);
+        ImGui::InvisibleButton(hot_id, ImVec2(value_w, kStepperH * scale));
+        const bool value_hovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked()) {
+            std::snprintf(state->stepper_edit_buf, sizeof(state->stepper_edit_buf),
+                          "%d", value);
+            state->editing_stepper = id;
+        }
+        if (value_hovered) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              value_hovered ? Rgba(kPurple) : Rgba(kText));
+        ImGui::SetCursorScreenPos(
+            ImVec2(value_pos.x + (value_w - value_size.x) * 0.5f,
+                   pos.y + (kStepperH * scale - value_size.y) * 0.5f));
+        cosmic::ui::TextSpaced(value_text.c_str(), 0.0f);
+        ImGui::PopStyleColor();
+    }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
 }
@@ -198,6 +278,9 @@ void DrawStepper(const char* id, int value, int step, int min, int max,
 
 void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction* out_action) {
     if (!state->settings_open) {
+        // Drop any in-progress inline stepper edit so reopening the panel
+        // starts clean instead of resuming a stale, unfocused input.
+        state->editing_stepper.clear();
         return;
     }
     const float scale = cosmic::ui::scale();
@@ -324,9 +407,9 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
     y += label_h + kLabelGap * scale;
 
     DrawStepper("fps", in.fps, kFpsStep, kFpsMin, kFpsMax, BridgeAction::SetFps,
-                ImVec2(content_x, y), col_w, scale, out_action);
+                ImVec2(content_x, y), col_w, scale, state, out_action);
     DrawStepper("port", in.port_base, 1, kPortMin, kPortMax, BridgeAction::SetPortBase,
-                ImVec2(content_x + col_w + col_gap, y), col_w, scale, out_action);
+                ImVec2(content_x + col_w + col_gap, y), col_w, scale, state, out_action);
     y += kStepperH * scale + kSectionGap * scale;
 
     // --- BITRATE ---
