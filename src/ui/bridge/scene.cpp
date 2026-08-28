@@ -610,9 +610,14 @@ void FlushDashes(SDL_Renderer* renderer) {
     g_dash_indices.clear();
 }
 
-// Hyperspace streak field (handoff v2): 520 particles radiating from behind
-// the monitor (origin 50%/45% of the viewport), drawn between the shooting
-// star and the warp flash so the desk group and all UI occlude them. Replicates
+// Forward declaration: DeskDest is defined further down (used by screen_rect
+// too); the streak field needs it for its origin point.
+SDL_FRect DeskDest(int out_w, int out_h);
+
+// Hyperspace streak field (handoff v2): 520 particles radiating from the
+// monitor beacon point (53.1%/41.4% of the desk art box -- where the machine
+// cards tether), drawn between the shooting star and the warp flash so the
+// desk group and all UI occlude them. Replicates
 // the prototype's drawWarpStreaks() 1:1, with the per-frame radial step
 // dt-corrected to the nominal 60fps the prototype assumes. Lines are emitted
 // as rotated quads through the shared geometry scratch buffers (the handoff's
@@ -648,8 +653,13 @@ void UpdateAndDrawWarpStreaks(SDL_Renderer* renderer, int out_w, int out_h,
         }
     }
 
-    const float origin_x = 0.5f * out_w;
-    const float origin_y = 0.45f * out_h;
+    // Origin: the monitor beacon point (53.1%/41.4% of the desk art box) --
+    // the same point the machine cards tether to in bridge.cpp -- rather than
+    // a fixed 50%/45% of the viewport, which drifted from the on-screen
+    // monitor as soon as the desk parallax moved.
+    const SDL_FRect desk = DeskDest(out_w, out_h);
+    const float origin_x = desk.x + 0.531f * desk.w;
+    const float origin_y = desk.y + 0.414f * desk.h;
     const float max_r = diag * 0.62f;
     const float layer_alpha = std::min(1.0f, w * 2.2f);
     const float step_frames = dt * 60.0f;  // prototype step is per 60fps frame
