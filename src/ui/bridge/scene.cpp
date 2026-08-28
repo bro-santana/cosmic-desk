@@ -73,9 +73,9 @@ constexpr int kScreenLogoIndex = 6;  // screen-logo.svg entry in kLayers
 
 // Cursor-spring natural frequency (rad/s). Critically damped second-order
 // smoother behind the parallax: the layers accelerate from rest and
-// decelerate into place. Tuned so the total settle (~1 s to 95%) matches the
-// old exponential 0.055/frame easing's feel.
-constexpr float kCursorOmega = 5.0f;
+// decelerate into place. 2.5 rad/s = half the old exponential easing's speed
+// (requested): the settle takes ~2 s to 95%, but the motion is gentler.
+constexpr float kCursorOmega = 2.5f;
 
 // First layer of the desk group (desk.svg). The warp flash draws just before
 // it, between the sky layers and the desk group (UI_MIGRATION A3).
