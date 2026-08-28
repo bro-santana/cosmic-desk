@@ -325,10 +325,11 @@ flash 2.2s peak 72%
 ## 6. Status & remaining polish
 
 - **Post-U7 feel change (requested):** the parallax cursor now uses a
-  critically damped second-order spring (acceleration ramp in, mirrored
-  deceleration out) instead of the prototype's constant-rate 0.055/frame
-  exponential; the spring frequency was then halved (2.5 rad/s — overall
-  speed cut in half, settle ~2 s to 95 %). Documented in scene.h.
+  third-order critically damped filter instead of the prototype's
+  constant-rate 0.055/frame exponential: the acceleration ramps up from zero
+  (the onset mirrors the decelerating arrival), tuned 15% faster than the
+  previous spring pass (2.875 rad/s, ~2 s to 95 % settle). Documented in
+  scene.h.
 
 U0-U6 are complete and the classic UI (host_list, settings_window) is deleted
 (U7). Remaining optional polish, none blocking:

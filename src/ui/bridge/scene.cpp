@@ -71,11 +71,13 @@ constexpr int kLayerCount = static_cast<int>(sizeof(kLayers) / sizeof(kLayers[0]
 constexpr int kReflexIndex = kLayerCount - 1;
 constexpr int kScreenLogoIndex = 6;  // screen-logo.svg entry in kLayers
 
-// Cursor-spring natural frequency (rad/s). Critically damped second-order
-// smoother behind the parallax: the layers accelerate from rest and
-// decelerate into place. 2.5 rad/s = half the old exponential easing's speed
-// (requested): the settle takes ~2 s to 95%, but the motion is gentler.
-constexpr float kCursorOmega = 2.5f;
+// Cursor-smoother natural frequency (rad/s). THIRD-ORDER critically damped
+// filter (three poles at -omega): the acceleration itself ramps from zero, so
+// the layers glide off with the exact mirrored profile of their decelerating
+// arrival -- the onset is as gentle as the settle-out (the second-order
+// spring still snapped its acceleration on instantly). 2.875 rad/s = the
+// previous 2.5 rad/s tuning made 15% faster as requested; 95% settle ~2 s.
+constexpr float kCursorOmega = 2.875f;
 
 // First layer of the desk group (desk.svg). The warp flash draws just before
 // it, between the sky layers and the desk group (UI_MIGRATION A3).
@@ -105,10 +107,12 @@ struct State {
     std::vector<Twinkle> twinkles;
     float cx = 0.0f;  // smoothed cursor, -1..1
     float cy = 0.0f;
-    float vx = 0.0f;  // cursor velocity (second-order spring, U7 follow-up)
+    float vx = 0.0f;  // cursor velocity (third-order smoother)
     float vy = 0.0f;
+    float ax = 0.0f;  // cursor acceleration (ramps up from zero on onset)
+    float ay = 0.0f;
     float tx_last = 0.0f;  // last valid cursor target (held while the mouse is
-    float ty_last = 0.0f;  // outside the window so the spring keeps settling)
+    float ty_last = 0.0f;  // outside the window so the filter keeps settling)
     float last_time_s = -1.0f;  // previous frame's in.time_s (-1 = first frame)
     // U5 warp transition: warp_t eases toward warp_target each frame (1 =
     // streaming, 0 = bridge). flash_start_s anchors the 2.2s warp flash in
@@ -753,6 +757,8 @@ void shutdown(SDL_Renderer* renderer) {
     g_state.cy = 0.0f;
     g_state.vx = 0.0f;
     g_state.vy = 0.0f;
+    g_state.ax = 0.0f;
+    g_state.ay = 0.0f;
     g_state.tx_last = 0.0f;
     g_state.ty_last = 0.0f;
     g_state.last_time_s = -1.0f;
@@ -778,15 +784,14 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     // ours at the top of every draw. Leaving it set on return is harmless.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
-    // 1. Smooth the cursor toward its target with a second-order critically
-    // damped spring: the layers accelerate from rest (ramp in), peak mid-way,
-    // and decelerate into place -- the settle-out is the same profile the old
-    // exponential easing had, mirrored on the way in. Deliberate feel change
-    // from the prototype's raw 0.055/frame exponential (which starts at full
-    // speed and only decelerates). kCursorOmega is tuned so the total settle
-    // time (~1 s to 95%) matches the old easing. dt is clamped so a hitch (or
-    // the first frame) cannot teleport the scene, and the explicit Euler step
-    // stays stable well beyond the clamp (dt << 2/omega).
+    // 1. Smooth the cursor toward its target with a THIRD-ORDER critically
+    // damped filter (three poles at -kCursorOmega). The arrival has always
+    // felt right (acceleration tapering smoothly to zero); this makes the
+    // onset its exact mirror: the acceleration itself ramps up from zero, so
+    // the layers glide off instead of lurching. Deliberate feel change from
+    // the prototype's raw 0.055/frame exponential. dt is clamped so a hitch
+    // (or the first frame) cannot teleport the scene; the explicit Euler step
+    // is stable far beyond the clamp (dt << 2/omega).
     float dt = g_state.last_time_s >= 0.0f ? in.time_s - g_state.last_time_s
                                            : 1.0f / 60.0f;
     g_state.last_time_s = in.time_s;
@@ -795,7 +800,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     const float ty = 2.0f * in.mouse_y / static_cast<float>(out_h) - 1.0f;
     // ImGui reports the mouse position as (-FLT_MAX,-FLT_MAX) while the cursor
     // is outside the window. Chase the LAST VALID target instead of the
-    // poisoned value: the spring keeps settling (decelerating) exactly like
+    // poisoned value: the filter keeps settling (decelerating) exactly like
     // the prototype does when the mouse stops moving, and NaN can never enter
     // the state.
     if (std::isfinite(tx) && std::isfinite(ty)) {
@@ -804,10 +809,13 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     }
     {
         const float w = kCursorOmega;
-        g_state.vx += (w * w * (g_state.tx_last - g_state.cx) -
-                       2.0f * w * g_state.vx) * dt;
-        g_state.vy += (w * w * (g_state.ty_last - g_state.cy) -
-                       2.0f * w * g_state.vy) * dt;
+        // x''' + 3w x'' + 3w^2 x' + w^3 x = w^3 T (three poles at -w).
+        g_state.ax += (w * w * w * (g_state.tx_last - g_state.cx) -
+                       3.0f * w * w * g_state.vx - 3.0f * w * g_state.ax) * dt;
+        g_state.ay += (w * w * w * (g_state.ty_last - g_state.cy) -
+                       3.0f * w * w * g_state.vy - 3.0f * w * g_state.ay) * dt;
+        g_state.vx += g_state.ax * dt;
+        g_state.vy += g_state.ay * dt;
         g_state.cx += g_state.vx * dt;
         g_state.cy += g_state.vy * dt;
     }
