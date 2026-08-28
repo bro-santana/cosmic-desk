@@ -48,6 +48,8 @@ struct BridgeInput {
     bool session_busy = false;              // g_session->busy()
     bool connected_or_connecting = false;   // show DISCONNECT
     std::string connecting_address;         // address a Connect is in flight to ("" = none)
+    float warp = 0.0f;  // U5: scene warp progress (0 = bridge, 1 = streaming);
+                        // drives the cards' exit and scale-up during the warp
     // Settings panel values (U4), applied by main.cpp when the panel emits a
     // Set* action.
     cosmic::ResolutionMode resolution_mode = cosmic::ResolutionMode::HostNative;

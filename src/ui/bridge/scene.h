@@ -52,8 +52,6 @@ struct SceneInput {
     float mouse_y = 0.0f;
     float time_s = 0.0f;   // SDL_GetTicks64() / 1000.0f
     float motion = 1.0f;   // parallax strength (design "motion" prop)
-    float flash_alpha = 0.0f;  // warp flash opacity; U5 animates 0->1->0 during
-                               // the warp, U1 draws it when > 0
     // Screen-logo overlay opacity (0..1). U2 drives 1 during boot, fading to 0
     // over the 1.4s after boot completes; U0 had it always-on.
     float screen_logo_alpha = 1.0f;
@@ -74,6 +72,14 @@ void shutdown(SDL_Renderer* renderer);
 // re-asserts its own renderer state in RenderDrawData. Does not touch ImGui
 // state.
 void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in);
+
+// Warp transition (U5): eases toward the target (1 = streaming, 0 = bridge)
+// with the prototype's 0.05/frame factor in time-corrected form. The sky
+// layers scale/fade and the machine cards exit with it.
+void set_warp_target(float target);
+float warp_progress();
+// Fires the 2.2 s warp flash (peak at 72%); U5 calls it on Connect.
+void trigger_warp_flash();
 
 // The smoothed parallax cursor in [-1,1]^2 (design "c"), as of the last draw.
 // The Bridge UI uses it for the machine-card orbit and its parallax factor.

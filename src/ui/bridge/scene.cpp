@@ -40,16 +40,20 @@ struct Layer {
     float drift_dx;        // design px at the 50% keyframe
     float drift_dy;        // design px at the 50% keyframe
     float drift_delay_s;   // start delay (negative = phase offset)
+    // U5 warp: the end scale the layer reaches at warp 1 (9/12/16 for the
+    // three sky layers, which also fade out; 1 = not affected by the warp).
+    float warp_end_scale = 1.0f;
 };
 
 // Draw order = array order (back -> front). Values from the handoff README
 // parallax table and the prototype's data-ex/ey/es attributes; the last four
-// columns are the drift spec (period/dx/dy/delay, 0 = no drift).
+// columns are the drift spec (period/dx/dy/delay, 0 = no drift) and the last
+// column is the U5 warp end scale (1 = not affected).
 constexpr Layer kLayers[] = {
     {"nebula.svg",      12.0f,   0.0f, -14.0f, 1.04f, 0.96f, 34.0f, -18.0f,  12.0f,   0.0f},
-    {"stars-far.svg",   10.0f,   0.0f, -10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
-    {"stars-mid.svg",   20.0f,   0.0f, -20.0f, 1.05f, 1.00f, 26.0f,  14.0f, -10.0f,   0.0f},
-    {"planets.svg",     13.0f,   0.0f, -32.0f, 1.02f, 1.00f, 32.0f,  14.0f, -10.0f,  -8.0f},
+    {"stars-far.svg",   10.0f,   0.0f, -10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f, 9.0f},
+    {"stars-mid.svg",   20.0f,   0.0f, -20.0f, 1.05f, 1.00f, 26.0f,  14.0f, -10.0f,   0.0f, 12.0f},
+    {"planets.svg",     13.0f,   0.0f, -32.0f, 1.02f, 1.00f, 32.0f,  14.0f, -10.0f,  -8.0f, 16.0f},
     {"desk.svg",        26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"monitor.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"screen-logo.svg", 26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},  // alpha overridden per-frame (U2)
@@ -88,7 +92,7 @@ struct State {
     uint64_t last_rasterize_ms = 0;  // SDL_GetTicks64() of last rasterize (0 = never)
     SDL_Texture* layers[kLayerCount] = {};
     SDL_Texture* bg = nullptr;
-    SDL_Texture* flash = nullptr;  // warp flash (opacity driven by flash_alpha)
+    SDL_Texture* flash = nullptr;  // warp flash (opacity driven by the U5 envelope)
     SDL_Texture* vignette = nullptr;  // full-viewport edge fade, drawn last
     SDL_Texture* streak = nullptr;    // shooting-star streak (fixed 170x2)
     SDL_Texture* glow = nullptr;      // screen glow (fixed 256x256)
@@ -96,6 +100,14 @@ struct State {
     float cx = 0.0f;  // smoothed cursor, -1..1
     float cy = 0.0f;
     float last_time_s = -1.0f;  // previous frame's in.time_s (-1 = first frame)
+    // U5 warp transition: warp_t eases toward warp_target each frame (1 =
+    // streaming, 0 = bridge). flash_start_s anchors the 2.2s warp flash in
+    // draw()'s clock (-1 = not flashing); trigger_warp_flash() only sets
+    // flash_pending, which draw() converts to a start time once.
+    float warp_t = 0.0f;
+    float warp_target = 0.0f;
+    double flash_start_s = -1.0;
+    bool flash_pending = false;
 };
 
 State g_state;
@@ -651,6 +663,23 @@ float FlickerOpacity(float t7) {
     return kFlickOpacities[kFlickCount - 1];
 }
 
+// The warp flash's 2.2s opacity envelope (prototype connect()): piecewise
+// linear 0 -> 0 over the first 55% of the window, -> 1 at 72%, -> 0 at 100%
+// (peak ~72% through the window, per the handoff README).
+float WarpFlashAlpha(double elapsed_s) {
+    const float p = static_cast<float>(elapsed_s / 2.2);
+    if (p < 0.55f) {
+        return 0.0f;
+    }
+    if (p < 0.72f) {
+        return (p - 0.55f) / (0.72f - 0.55f);
+    }
+    if (p < 1.0f) {
+        return 1.0f - (p - 0.72f) / (1.0f - 0.72f);
+    }
+    return 0.0f;
+}
+
 // The desk group's dest rect for the given viewport: the art box scaled by the
 // desk layer's es and translated by its parallax offsets (ex/ey minus depth
 // times the smoothed cursor). All desk-group layers share these values, so
@@ -713,6 +742,10 @@ void shutdown(SDL_Renderer* renderer) {
     g_state.cx = 0.0f;
     g_state.cy = 0.0f;
     g_state.last_time_s = -1.0f;
+    g_state.warp_t = 0.0f;
+    g_state.warp_target = 0.0f;
+    g_state.flash_start_s = -1.0;
+    g_state.flash_pending = false;
     g_state.initialized = false;
 }
 
@@ -752,6 +785,31 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     if (std::isfinite(tx) && std::isfinite(ty)) {
         g_state.cx += (tx - g_state.cx) * ease;
         g_state.cy += (ty - g_state.cy) * ease;
+    }
+
+    // Warp transition (U5): same time-corrected easing as the parallax above,
+    // with the prototype's 0.05/frame factor (docs/UI_MIGRATION.md §5). The
+    // scene warps out (target 1) while a session connects and reassembles
+    // (target 0) when it ends.
+    const float warp_k = 1.0f - std::pow(1.0f - 0.05f, dt * 60.0f);
+    g_state.warp_t += (g_state.warp_target - g_state.warp_t) * warp_k;
+
+    // A pending warp flash starts on the frame it was requested: draw() owns
+    // the clock (trigger_warp_flash only sets the flag).
+    if (g_state.flash_pending) {
+        g_state.flash_start_s = in.time_s;
+        g_state.flash_pending = false;
+    }
+    // The flash's 2.2s envelope (peak ~72%); it ends itself when the window
+    // completes, so no explicit stop call is needed.
+    float flash_alpha = 0.0f;
+    if (g_state.flash_start_s >= 0.0) {
+        const double elapsed = in.time_s - g_state.flash_start_s;
+        if (elapsed >= 2.2) {
+            g_state.flash_start_s = -1.0;
+        } else {
+            flash_alpha = WarpFlashAlpha(elapsed);
+        }
     }
 
     // 2. Rasterize on resize (art box sized to the viewport). Re-rasterizing
@@ -838,13 +896,13 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
 
         // The warp flash sits between the sky layers and the desk group
         // (UI_MIGRATION A3), matching the prototype's DOM. The texture is
-        // opaque white where lit, so alpha-mod fades the whole thing; U5
-        // animates flash_alpha, U1 draws it when > 0.
+        // opaque white where lit, so alpha-mod fades the whole thing; the
+        // alpha comes from the internal 2.2s envelope (peak at 72%).
         if (i == kDeskGroupIndex && g_state.flash != nullptr &&
-            in.flash_alpha > 0.001f) {
+            flash_alpha > 0.001f) {
             SDL_SetTextureAlphaMod(
                 g_state.flash,
-                static_cast<Uint8>(std::clamp(in.flash_alpha, 0.0f, 1.0f) * 255.0f));
+                static_cast<Uint8>(std::clamp(flash_alpha, 0.0f, 1.0f) * 255.0f));
             const SDL_Rect dst{0, 0, out_w, out_h};
             SDL_RenderCopy(renderer, g_state.flash, nullptr, &dst);
         }
@@ -909,8 +967,24 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             anim_oy = layer.drift_dy * ease * scale;
         }
 
-        const float w = art_w * layer.es;
-        const float h = art_h * layer.es;
+        // Warp (U5): the three sky layers (warp_end_scale != 1) scale toward
+        // their end scale (9/12/16) and fade out as warp_t -> 1 while the desk
+        // group stays put. The scale is about the dest center: the rect below
+        // re-centers the scaled w/h. The alpha mod is re-applied per frame
+        // while warping (the rasterize-time value stands at warp 0).
+        float base_alpha = layer.alpha;
+        float w = art_w * layer.es;
+        float h = art_h * layer.es;
+        if (layer.warp_end_scale != 1.0f) {
+            const float factor = 1.0f + g_state.warp_t * (layer.warp_end_scale - 1.0f);
+            w *= factor;
+            h *= factor;
+            base_alpha *= (1.0f - g_state.warp_t);
+            if (g_state.warp_t > 0.0f) {
+                SDL_SetTextureAlphaMod(
+                    tex, static_cast<Uint8>(std::clamp(base_alpha, 0.0f, 1.0f) * 255.0f));
+            }
+        }
         const float ox = layer.ex - cx * layer.depth + anim_ox;
         const float oy = layer.ey - cy * layer.depth + anim_oy;
         const SDL_FRect dest{
@@ -953,6 +1027,20 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         const SDL_Rect dst{0, 0, out_w, out_h};
         SDL_RenderCopy(renderer, g_state.vignette, nullptr, &dst);
     }
+}
+
+void set_warp_target(float target) {
+    g_state.warp_target = std::clamp(target, 0.0f, 1.0f);
+}
+
+float warp_progress() {
+    return g_state.warp_t;
+}
+
+void trigger_warp_flash() {
+    // draw() owns the clock: the flag is converted to flash_start_s on the
+    // next frame, so the envelope anchors to the frame the flash was asked for.
+    g_state.flash_pending = true;
 }
 
 SDL_FRect screen_rect(int out_w, int out_h) {

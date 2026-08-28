@@ -413,14 +413,19 @@ int main(int argc, char** argv) {
         SDL_ShowWindow(window);
     }
 
-    if (!autoconnect_ip.empty()) {
-        g_session->start_connect(autoconnect_ip, settings.port_base);
-    }
-
     // Address of the machine a Connect is in flight to ("" = none). Drives the
     // Bridge card's LINKING... state; kept while the session is Connecting or
     // Streaming and cleared when it returns to Idle/Failed.
     std::string connecting_address;
+
+    if (!autoconnect_ip.empty()) {
+        // U5: the autoconnect path warps out like a card Connect. Seed the
+        // connecting address so the STREAMING label can show the nickname.
+        connecting_address = autoconnect_ip;
+        cosmic::ui::scene::set_warp_target(1.0f);
+        cosmic::ui::scene::trigger_warp_flash();
+        g_session->start_connect(autoconnect_ip, settings.port_base);
+    }
 
     // Viewer renderer is created lazily once the negotiated stream dimensions
     // are known and destroyed when leaving Viewing mode (plan M2.4).
@@ -593,6 +598,9 @@ int main(int argc, char** argv) {
         if (session_status.state == cosmic::viewer::ViewerState::Idle ||
             session_status.state == cosmic::viewer::ViewerState::Failed) {
             connecting_address.clear();
+            // U5: an ended/failed session warps the scene back to the Bridge.
+            // Idempotent — the target is already 0 when no session is active.
+            cosmic::ui::scene::set_warp_target(0.0f);
         }
         // Build the Bridge Pair modal's live feedback from the session status,
         // and resolve the pair latch. This is only correct because begin_worker
@@ -636,7 +644,11 @@ int main(int argc, char** argv) {
                         // excluded by busy() and AppMode::Viewing.
             }
         }
-        if (session_status.state == cosmic::viewer::ViewerState::Streaming) {
+        // U5: enter Viewing only once the warp has carried the scene out (warp
+        // progress >= 0.95). While Streaming with the warp still rising, stay
+        // in MainWindow — the scene keeps warping and the bridge keeps drawing.
+        if (session_status.state == cosmic::viewer::ViewerState::Streaming &&
+            cosmic::ui::scene::warp_progress() >= 0.95f) {
             if (mode != cosmic::AppMode::HiddenToTray) {
                 if (mode != cosmic::AppMode::Viewing) {
                     // Entering Viewing: keep the fullscreen video visible when
@@ -657,6 +669,9 @@ int main(int argc, char** argv) {
             // the hints, and tear down the video renderer.
             leave_viewing_ui(window, &input_grabbed, &vrenderer_active);
             SDL_ShowWindow(window);
+            // U5: warp back to the Bridge — the scene reassembles while the
+            // bridge shows.
+            cosmic::ui::scene::set_warp_target(0.0f);
         }
 
         if (mode == cosmic::AppMode::HiddenToTray) {
@@ -802,6 +817,7 @@ int main(int argc, char** argv) {
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
         bridge_input.time_s = static_cast<double>(SDL_GetTicks64()) / 1000.0;
         bridge_input.hosts = settings.hosts_snapshot();
+        bridge_input.warp = cosmic::ui::scene::warp_progress();
         switch (session_status.state) {
         case cosmic::viewer::ViewerState::Idle:
         case cosmic::viewer::ViewerState::Failed:
@@ -814,9 +830,22 @@ int main(int argc, char** argv) {
         case cosmic::viewer::ViewerState::Connecting:
             bridge_input.session_label = "CONNECTING";
             break;
-        case cosmic::viewer::ViewerState::Streaming:
-            bridge_input.session_label = "STREAMING";
+        case cosmic::viewer::ViewerState::Streaming: {
+            // U5: "SESSION · STREAMING · <NICKNAME>" when the connected host
+            // has a nickname (nicknames are stored uppercase).
+            std::string label = "STREAMING";
+            if (!connecting_address.empty()) {
+                for (const cosmic::SavedHost& host : bridge_input.hosts) {
+                    if (host.address == connecting_address &&
+                        !host.nickname.empty()) {
+                        label += " · " + host.nickname;
+                        break;
+                    }
+                }
+            }
+            bridge_input.session_label = label;
             break;
+        }
         }
         bridge_input.session_busy = g_session->busy();
         bridge_input.connected_or_connecting =
@@ -883,6 +912,11 @@ int main(int argc, char** argv) {
         // frame whose call then no-ops. Benign.
         if (bridge_result.action.kind == cosmic::ui::bridge::BridgeAction::Connect) {
             connecting_address = bridge_result.action.address;
+            // U5: warp out to the stream — the sky zooms/fades and the cards
+            // exit while the session connects; Viewing starts once the warp
+            // reaches 0.95.
+            cosmic::ui::scene::set_warp_target(1.0f);
+            cosmic::ui::scene::trigger_warp_flash();
             g_session->start_connect(bridge_result.action.address,
                                      settings.port_for(bridge_result.action.address));
         } else if (bridge_result.action.kind ==

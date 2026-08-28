@@ -192,14 +192,22 @@ ImVec2 CardOrbitCenter(const BridgeInput& in, const cosmic::ui::scene::CursorSmo
     // prototype's data-depth transform).
     float x = ox * std::cosf(tilt) - oy * std::sinf(tilt) - cursor.x * depth * 0.35f;
     float y = ox * std::sinf(tilt) + oy * std::cosf(tilt) - cursor.y * depth * 0.35f;
-    // Clamp so the card stays fully in viewport with an 8px margin.
+    // Clamp so the card stays fully in viewport with an 8px margin — but only
+    // while the scene is at rest. During the warp (U5) the clamp is skipped so
+    // the cards exit through the viewport edges and stay out while w ~ 1.
     const float ax = 0.5f * vp_size.x;
     const float ay = 0.47f * vp_size.y;
     const float half_w = 128.0f * scale;
     const float half_h = 82.0f * scale;
     const float margin = 8.0f * scale;
-    x = std::clamp(x, -ax + half_w + margin, vp_size.x - ax - half_w - margin);
-    y = std::clamp(y, -ay + half_h + margin, vp_size.y - ay - half_h - margin);
+    if (in.warp <= 0.02f) {
+        x = std::clamp(x, -ax + half_w + margin, vp_size.x - ax - half_w - margin);
+        y = std::clamp(y, -ay + half_h + margin, vp_size.y - ay - half_h - margin);
+    }
+    // Warp (U5): orbit offsets multiply by 1 + w^2*5, accelerating the cards
+    // out through the viewport edges (prototype: x *= 1 + wt*wt*5).
+    x *= 1.0f + in.warp * in.warp * 5.0f;
+    y *= 1.0f + in.warp * in.warp * 5.0f;
     // Float bob: translateY 0 <-> -8px, cosine ease, period by index.
     const float period = kCardBobPeriods[index % 3];
     const float bob = -8.0f * (0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / period)));
@@ -214,8 +222,10 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
                              const SavedHost& host, int index,
                              const ImVec2& center, float scale, int64_t now_unix) {
     BridgeAction action;
-    const float w = kCardW * scale;
-    const float h = kCardH * scale;
+    // Warp (U5): cards scale up by 1 + 0.6*w around their center — the pos
+    // below derives from the center, so the card stays centered while it grows.
+    const float w = kCardW * scale * (1.0f + 0.6f * in.warp);
+    const float h = kCardH * scale * (1.0f + 0.6f * in.warp);
     const ImVec2 pos(center.x - w * 0.5f, center.y - h * 0.5f);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
