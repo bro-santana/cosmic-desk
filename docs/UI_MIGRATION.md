@@ -18,11 +18,11 @@ tasks and "run X, see Y" acceptance. Total estimate: **4–6 weeks**.
 
 | # | Decision | Rationale |
 |---|---|---|
-| A1 | **Stay on SDL2.** `SDL_RenderCopyEx` (rotated/scaled sprites) + `SDL_RenderGeometry` (dashed beams, ring, twinkles) cover everything the design needs. | SDL3 gains nothing here; migration churns viewer/audio/input/tray for no visual benefit. Revisit post-v1. |
+| A1 | **Stay on SDL2.** `SDL_RenderCopyEx` (rotated/scaled sprites) + `SDL_RenderGeometry` (dashed beams, ring, twinkles) cover everything the design needs. | SDL3 gains nothing here (the one thing SDL_Renderer can't do — real blur/glow — SDL3's renderer can't do either without the GPU API, and the TUI restyle dropped blur anyway); migration churns viewer/audio/input/tray for no visual benefit — `src/viewer/audio.cpp` uses the SDL2 audio-queue API that SDL3 removed (would force an SDL_AudioStream rewrite), and Ubuntu 24.04 (our CI image) has no `libsdl3-dev`, breaking the system-packages-only policy on Linux. Revisit post-v1. |
 | A2 | **Layer sprites rasterized at runtime from SVG via vendored `lunasvg`** (MIT, `third-party/lunasvg`). On window resize, re-render each layer into an `SDL_Texture` at display size. | Repo stays small (SVGs are 9–60 KB), always crisp at any DPI/resolution, no pre-bake step to forget. Verified: no rasterizable layer contains `<text>`. |
 | A3 | **Rendering order per frame (Bridge mode):** SDL draws the scene (bg gradient → twinkles → nebula → stars-far → stars-mid → planets → shooting star → warp flash → desk group → orbit ring → tether beams → vignette), then the existing `ImGui_ImplSDLRenderer2_RenderDrawData` draws all UI on top. | Mirrors the prototype's DOM stacking (the HTML draws ring/beams/vignette after the art box; stars-far/stars-mid sit above planets); reuses today's main-loop structure (main.cpp:766–841) unchanged in shape. |
 | A4 | **All Bridge UI is one fullscreen borderless ImGui window.** Cards are absolutely-positioned child windows inside it (`SetCursorPos` + `BeginChild`, ID = `"###"+address`). Panels (Settings, Pair) are children too. | Avoids ImGui multi-window z-order pitfalls; keeps the established *action-struct-after-frame* pattern: new `BridgeAction` mirrors today's `HostListAction` so main.cpp's action-application block survives almost unchanged (main.cpp:848–879). |
-| A5 | **Documented deviations from the prototype** (all invisible-in-practice): (a) no `rotateY/rotateX` 3D tilt on cards/desk — ImGui cannot rotate text; parallax translation is kept; (b) depth-of-field blur approximated as opacity fade of far cards (no per-draw blur in SDL_Renderer); (c) card drop-shadow halo drawn from a runtime-generated radial texture (polish, U6); (d) letter-spacing via a per-glyph `TextSpaced()` helper; (e) dock backdrop blur omitted (backdrop is near-opaque in practice). | The screenshots show cards unrotated and flat; these are the only losses. |
+| A5 | **Documented deviations from the prototype** (all invisible-in-practice): (a) no `rotateY/rotateX` 3D tilt on cards/desk — ImGui cannot rotate text; parallax translation is kept; (b) depth-of-field blur approximated as opacity fade of far cards (no per-draw blur in SDL_Renderer); (c) card drop-shadow halo drawn from a runtime-generated radial texture (polish, U6); (d) letter-spacing via a per-glyph `TextSpaced()` helper; (e) dock backdrop blur omitted (backdrop is near-opaque in practice); (f) no card hover *scale* (prototype: 1.1 with a springy bezier) — ImGui child windows cannot scale their content; hover feedback is the border/glow highlight only. | The screenshots show cards unrotated and flat; these are the only losses. |
 | A6 | **Old UI deleted at the end** (U7). | Git history is the fallback. |
 
 **Fonts:** IBM Plex Mono 400/500/700 + IBM Plex Sans 400/500/600 TTFs committed to
@@ -30,7 +30,18 @@ tasks and "run X, see Y" acceptance. Total estimate: **4–6 weeks**.
 prototype loads it but never applies it (confirmed in the HTML and screenshots).
 The font atlas is built in `ui/scale.cpp` at `design_px × ui::scale()`; the
 ASCII-only input filters stay (hostnames/addresses), but the "ASCII only" comment
-constraints can be relaxed for display text.
+constraints can be relaxed for display text — the atlas needs custom glyph
+ranges beyond Basic Latin for the display glyphs the design uses (— U+2014
+and … U+2026, both present in Plex; · U+00B7 is already inside the default
+Latin-1 range and renders fine).
+
+**Missing symbol glyphs (verified against the committed TTF cmaps):** IBM Plex
+Mono/Sans contain **no** ✎ (U+270E), ◈ (U+25C8), ✕ (U+2715) or ● (U+25CF).
+Wherever the prototype uses those, draw them as `ImDrawList` primitives instead
+of text: status dots and the beacon are filled circles (already the plan), ✕ is
+two crossed lines, ✎ is a small pencil path (or the label `EDIT`), and the
+◈ in the handshake line can be a small drawn diamond or dropped. Do **not** put
+these characters in UI strings — they would render as `?`.
 
 ## 2. New / changed files
 
@@ -48,13 +59,15 @@ src/ui/bridge/
                                   fullscreen window: cards + dock + session status +
                                   panels; calls into scene/panels/warp
   scene.{h,cpp}                   SDL layer textures (lunasvg), parallax tick
-                                  (c += (t−c)·0.055), depth table, art-box mapping,
+                                  (c += (t−c)·0.055 @60fps, time-corrected — §5),
+                                  depth table, art-box mapping,
                                   twinkle LCG (seed 42 — exact replica), bg gradient,
                                   vignette, shooting star, glow, reflex, flash,
                                   dashed-line + dashed-ellipse helpers (beams, ring)
   panels.{h,cpp}                  Settings panel (depth 70), Pair modal (depth 80),
                                   PIN-on-monitor panel (screen rect)
-  warp.{h,cpp}                    warpT easing (0.05/frame toward target), sky scale/
+  warp.{h,cpp}                    warpT easing (0.05/frame @60fps toward target,
+                                  time-corrected — §5), sky scale/
                                   opacity, card exit math, flash envelope (peak 72%
                                   of 2.2 s)
   text.{h,cpp}                    TextSpaced() letter-spacing helper, font pushers
@@ -169,8 +182,9 @@ mouse like the prototype.
    ellipsized name, state label right, divider gradient, mono address, muted
    last-connected, CONNECT `#438a70` / PAIR ghost); state mapping:
    `online&&paired → LINK READY`, `paired → STANDBY`, `!paired → NOT PAIRED`
-   (online arrives in U6; until then LINK READY never shows). Inline rename (✎)
-   → prefilled input → `Edit` action (uppercase, Enter/Esc).
+   (online arrives in U6; until then LINK READY never shows). Inline rename (✎ —
+   drawn as an ImDrawList pencil, NOT a text glyph; Plex has no U+270E, see
+   Fonts note) → prefilled input → `Edit` action (uppercase, Enter/Esc).
 4. Bottom dock (PAIR MACHINE / SETTINGS, fixed, never orbits) + session status
    (bottom-left) + DISCONNECT (red, when connecting/connected) + empty-state
    beacon card (8 %/30 %, 270 px) when no hosts.
@@ -190,11 +204,16 @@ zero hosts; cards never leave the viewport while orbiting.
    cosmic.json), FPS stepper 10–240 step 10, PORT BASE stepper 1024–65400
    step 1, BITRATE slider 5–150 (`bitrate_kbps/1000`, value in `#ffce54`),
    Autostart toggle (40×20, wired to `app::autostart` like today), footnote.
-   Replaces `settings_window.cpp` usage.
+   Replaces `settings_window.cpp` usage. **Keep its save semantics**: edits
+   mutate the live `Settings` immediately, but `Settings::save()` fires only on
+   the panel-close transition (plus shutdown) via a dirty flag — save() is a
+   full-file rewrite, so steppers/sliders must not hit disk per tick.
 2. **Pair modal** (372 px, depth 80, scrim `rgba(6,8,20,.5)` click-closes when
    idle): address + nickname inputs, default-port checkbox, PAIR (disabled until
    non-empty) / CLOSE; while pairing: divider + "◈ HANDSHAKE IN TRANSIT — PIN IS
-   ON THE MONITOR" + CANCEL, scrim + other UI fade to 25 %
+   ON THE MONITOR" (the ◈ is a small drawn diamond, NOT a text glyph — Plex has
+   no U+25C8; likewise the panel/Settings ✕ close buttons are two drawn lines)
+   + CANCEL, scrim + other UI fade to 25 %
    (`PushStyleVar(ImGuiStyleVar_Alpha)`), panel slides lower-left
    (left max(16 %,220 px), top 72 %).
 3. **PIN on the monitor**: inside `screen_rect()` — scanlines (repeating 2 px
@@ -211,7 +230,10 @@ and completes; cancel/error paths behave exactly as today.
 
 ### U5 — Warp (3–5 days)
 
-1. `warp.cpp`: `warpT += (target − warpT)·0.05/frame`. On Connect: target 1;
+1. `warp.cpp`: `warpT += (target − warpT)·k` with the time-corrected factor
+   `k = 1 − pow(1 − 0.05, dt·60)` (§5 — the prototype's 0.05 assumes a 60 fps
+   rAF loop; a raw per-frame constant would halve the warp on a 120 Hz panel).
+   On Connect: target 1;
    stars-far/mid/planets scale →9/12/16 and fade out; card orbit offsets multiply
    `1 + w²·5`, scale `1 + 0.6w`; flash peaks at 72 % of a 2.2 s window; beams go
    green, dashoffset −60 px/s.
@@ -244,7 +266,8 @@ visual diff against all 5 screenshots passes at normal glance.
    Verify zip/deb bundling picks up `assets/ui/layers` + `assets/fonts`
    (make-zip.ps1 copies `assets/` wholesale — confirm; Linux
    `install(DIRECTORY assets/)` likewise).
-2. `docs/VENDOR.md`: lunasvg + IBM Plex rows. `README.md` + `PLAN.md`: link
+2. `docs/VENDOR.md`: lunasvg + IBM Plex rows (**done in U0** — VENDOR.md:33–35;
+   just verify they are current). `README.md` + `PLAN.md`: link
    `docs/UI_MIGRATION.md`, note the new UI. CI green on MSYS2 + Ubuntu.
 3. Final fidelity pass: side-by-side screenshots vs the handoff on Win + Linux;
    tune per-OS font sizes.
@@ -263,17 +286,29 @@ green #8ac49c · btn #438a70 hover #5cae8a · selected #609e75 · amber #ffce54 
 red #b0556b hover #c9758a
 Depths: bg 8 · nebula 12 · stars-far 10 · stars-mid 20 · planets 13 · desk 26 ·
 settings 70 · pair 80 · cards 88/94/102
-Timings: parallax smooth .055 · ring 22s · nebula drift 34s · drift2 26/32s ·
+Timings: parallax smooth .055/frame@60 (time-corrected) · ring 22s · nebula
+drift 34s · drift2 26/32s ·
 twk 2–5.5s · beacon 2.6s · flick 7s · boot 0.3/1.0/1.7/2.4/3.1s (end 4.4s) ·
 pinup .7s · scan sweep 2.4s · pinpulse 2.4s · shoot 14s @3s · bob 7/8.5/9.5s ·
-warp ease .05/frame, sky scale 9/12/16, card ×(1+w²·5), flash 2.2s peak 72%
+warp ease .05/frame@60 (time-corrected), sky scale 9/12/16, card ×(1+w²·5),
+flash 2.2s peak 72%
 ```
 
 ## 5. Risks & guardrails for the implementer
 
+- **Frame-rate independence:** the prototype's exponential easings (parallax
+  .055, warp .05) are *per-frame at a nominal 60 fps*, but our loop runs at
+  whatever vsync gives (60–240 Hz). Every `v += (target − v)·k` easing must use
+  the time-corrected factor `k = 1 − pow(1 − k60, dt·60)` with dt clamped to
+  ≤0.1 s (hitches must not teleport the scene). Everything else is driven by
+  absolute `time_s` and needs no correction. (Parallax is already corrected in
+  scene.cpp; U5's warpT must follow the same pattern.)
 - **Texture lifetime on resize:** rebuild all layer textures in one place on
   `SDL_WINDOWEVENT_SIZE_CHANGED`; never cache raw pointers across frames.
-  (Biggest novice trap — coded first in U0, tested hard.)
+  (Biggest novice trap — coded first in U0, tested hard.) Re-rasterizing ~14
+  SVGs at window size is expensive, so it is throttled to once per 300 ms
+  during a resize drag — old textures are stretched in between (already coded
+  in scene.cpp; keep that behavior).
 - **ImGui per-frame repositioning:** always `SetNextWindowPos/SetCursorPos` with
   `ImGuiCond_Always`; child IDs pinned via `"###"+address` so renames don't drop
   held clicks (pattern already used in host_list.cpp:95).

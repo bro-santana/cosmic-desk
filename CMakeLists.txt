@@ -107,9 +107,10 @@ add_executable(cosmicdesk
     src/ui/tray.cpp
     src/ui/viewer_topbar.cpp
     src/ui/fonts.cpp
+    src/ui/bridge/bridge.cpp
+    src/ui/bridge/panels.cpp
     src/ui/bridge/scene.cpp
     src/ui/bridge/text.cpp
-    src/ui/bridge/bridge.cpp
     src/viewer/session.cpp
     src/viewer/decoder.cpp
     src/viewer/vrenderer.cpp

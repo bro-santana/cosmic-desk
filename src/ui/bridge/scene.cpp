@@ -95,6 +95,7 @@ struct State {
     std::vector<Twinkle> twinkles;
     float cx = 0.0f;  // smoothed cursor, -1..1
     float cy = 0.0f;
+    float last_time_s = -1.0f;  // previous frame's in.time_s (-1 = first frame)
 };
 
 State g_state;
@@ -711,6 +712,7 @@ void shutdown(SDL_Renderer* renderer) {
     g_state.twinkles.clear();
     g_state.cx = 0.0f;
     g_state.cy = 0.0f;
+    g_state.last_time_s = -1.0f;
     g_state.initialized = false;
 }
 
@@ -729,7 +731,16 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     // ours at the top of every draw. Leaving it set on return is harmless.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
-    // 1. Smooth the cursor toward its target (prototype easing, ~60 fps).
+    // 1. Smooth the cursor toward its target. The prototype eases 0.055/frame
+    // in a nominal-60fps rAF loop, but our loop runs at whatever vsync gives
+    // us (60..240 Hz), so convert the per-frame factor into a time-based decay
+    // or the parallax would settle 2-4x too fast on high-refresh displays.
+    // dt is clamped so a hitch (or the first frame) cannot teleport the scene.
+    float dt = g_state.last_time_s >= 0.0f ? in.time_s - g_state.last_time_s
+                                           : 1.0f / 60.0f;
+    g_state.last_time_s = in.time_s;
+    dt = std::clamp(dt, 0.0f, 0.1f);
+    const float ease = 1.0f - std::pow(1.0f - 0.055f, dt * 60.0f);
     const float tx = 2.0f * in.mouse_x / static_cast<float>(out_w) - 1.0f;
     const float ty = 2.0f * in.mouse_y / static_cast<float>(out_h) - 1.0f;
     // ImGui reports the mouse position as (-FLT_MAX,-FLT_MAX) while the cursor
@@ -739,8 +750,8 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     // leaves the window. Hold the last smoothed position instead, matching the
     // prototype (it only updates on in-window mousemove events).
     if (std::isfinite(tx) && std::isfinite(ty)) {
-        g_state.cx += (tx - g_state.cx) * 0.055f;
-        g_state.cy += (ty - g_state.cy) * 0.055f;
+        g_state.cx += (tx - g_state.cx) * ease;
+        g_state.cy += (ty - g_state.cy) * ease;
     }
 
     // 2. Rasterize on resize (art box sized to the viewport). Re-rasterizing

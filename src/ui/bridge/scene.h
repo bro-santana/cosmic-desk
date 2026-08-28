@@ -9,9 +9,10 @@
 //   - Art box: the layers are authored on a 1620.8481 x 1200 canvas and drawn
 //     at a width of max(104vw, 140vh), centered. This guarantees parallax
 //     translation never reveals the art edges on any viewport.
-//   - Parallax smoothing: the cursor is eased toward its target each frame with
-//     c += (t - c) * 0.055, matching the prototype and assuming ~60 fps
-//     (vsync is on).
+//   - Parallax smoothing: the cursor is eased toward its target each frame
+//     with the prototype's 0.055 per-frame factor converted to the time-based
+//     form ease = 1 - pow(1 - 0.055, dt*60) (dt clamped to <= 0.1 s), so the
+//     feel is identical at any vsync rate, not just the prototype's ~60 fps.
 //   - Layer depth table (back -> front), from the handoff README parallax table
 //     and the prototype's data-ex/ey/es attributes:
 //

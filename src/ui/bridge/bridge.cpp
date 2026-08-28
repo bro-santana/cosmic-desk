@@ -21,6 +21,7 @@
 #include <string>
 
 #include "ui/bridge/design.h"
+#include "ui/bridge/panels.h"
 #include "ui/bridge/scene.h"
 #include "ui/bridge/text.h"
 #include "ui/fonts.h"
@@ -414,8 +415,14 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
             if (DrawButton("##pair", "PAIR", 0.2f, ImVec2(cta_x, row_y), pair_size,
                            0, 0, kPurpleBorder, kPurple, kPurple, kText, scale,
                            &pair_hovered)) {
-                action.kind = BridgeAction::OpenPairModal;
-                action.address = host.address;
+                // Open the Bridge's own Pair modal, prefilled with this host's
+                // address; the nickname/port fields start clean.
+                state->pair_modal_open = true;
+                std::snprintf(state->pair_address_buf, sizeof(state->pair_address_buf),
+                              "%s", host.address.c_str());
+                state->pair_nickname_buf[0] = '\0';
+                state->pair_use_default_port = true;
+                state->pair_port_input = 0;
             }
             ImGui::EndDisabled();
             widget_hovered |= pair_hovered;
@@ -500,7 +507,8 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
 
 // Empty state: a single beacon card at 8%/30% of the viewport when there are
 // no hosts.
-BridgeAction DrawEmptyCard(const BridgeInput& in, const ImVec2& vp_size, float scale) {
+BridgeAction DrawEmptyCard(const BridgeInput& in, BridgeState* state,
+                           const ImVec2& vp_size, float scale) {
     BridgeAction action;
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     const float w = kEmptyW * scale;
@@ -559,7 +567,12 @@ BridgeAction DrawEmptyCard(const BridgeInput& in, const ImVec2& vp_size, float s
                          pos.y + 64.0f * scale + body_size.y + 12.0f * scale);
     if (DrawButton("##empty_pair", "PAIR A MACHINE", 0.22f, btn_pos, btn_size,
                    kGreenBtn, kGreenHover, 0, 0, kText, kText, scale)) {
-        action.kind = BridgeAction::OpenPairModal;
+        // Open the Bridge's own Pair modal with a clean address field.
+        state->pair_modal_open = true;
+        state->pair_address_buf[0] = '\0';
+        state->pair_nickname_buf[0] = '\0';
+        state->pair_use_default_port = true;
+        state->pair_port_input = 0;
     }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
@@ -567,7 +580,10 @@ BridgeAction DrawEmptyCard(const BridgeInput& in, const ImVec2& vp_size, float s
 }
 
 // Bottom dock: PAIR MACHINE + SETTINGS, fixed at bottom center (never orbits).
-BridgeAction DrawDock(const ImVec2& vp_size, float scale) {
+// The SETTINGS button flips state->settings_open directly — the panel is drawn
+// after the dock, so it appears above it, and main.cpp never sees a
+// ToggleSettings action.
+BridgeAction DrawDock(BridgeState* state, const ImVec2& vp_size, float scale) {
     BridgeAction action;
     ImGui::PushFont(cosmic::ui::FontMonoBold());
     ImGui::SetWindowFontScale(11.0f / 13.0f);
@@ -584,12 +600,17 @@ BridgeAction DrawDock(const ImVec2& vp_size, float scale) {
     if (DrawButton("##dock_pair", "PAIR MACHINE", 0.24f,
                    ImVec2(dock_x, dock_y), pair_size,
                    kDockPairBg, kDockPairHover, 0, 0, kText, kText, scale)) {
-        action.kind = BridgeAction::OpenPairModal;
+        // Open the Bridge's own Pair modal with a clean address field.
+        state->pair_modal_open = true;
+        state->pair_address_buf[0] = '\0';
+        state->pair_nickname_buf[0] = '\0';
+        state->pair_use_default_port = true;
+        state->pair_port_input = 0;
     }
     if (DrawButton("##dock_settings", "SETTINGS", 0.24f,
                    ImVec2(dock_x + pair_size.x + gap, dock_y), settings_size,
                    0, 0, kBorderDim, kPurple, kPurple, kText, scale)) {
-        action.kind = BridgeAction::ToggleSettings;
+        state->settings_open = !state->settings_open;
     }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
@@ -774,12 +795,20 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     ImGui::PopFont();
 
     // ---- U3: machine cards, bottom dock, session status ----
+    // While pairing, the chrome fades to 25% so the monitor PIN stays
+    // prominent (design: "scrim + other UI fade to 25%"). The Settings panel
+    // below is deliberately NOT faded - it stays at full opacity during
+    // pairing (the pair modal's scrim still blocks clicks over it).
+    const bool pairing = in.pairing_active;
+    if (pairing) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.25f);
+    }
     const cosmic::ui::scene::CursorSmooth cursor = cosmic::ui::scene::smoothed_cursor();
     const int64_t now_unix = static_cast<int64_t>(std::time(nullptr));
 
     if (in.hosts.empty()) {
         // Empty state: a single beacon card at 8%/30% when there are no hosts.
-        result.action = DrawEmptyCard(in, vp_size, scale);
+        result.action = DrawEmptyCard(in, state, vp_size, scale);
     } else {
         // Machine cards orbit the scene center on a tilted ellipse.
         for (size_t i = 0; i < in.hosts.size(); ++i) {
@@ -797,13 +826,40 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     // Bottom dock + session status (fixed, never orbit). Always drawn; only
     // the action assignment is gated so a card action on this frame does not
     // make the dock/status flicker out for one frame.
-    const BridgeAction dock_action = DrawDock(vp_size, scale);
+    const BridgeAction dock_action = DrawDock(state, vp_size, scale);
     if (result.action.kind == BridgeAction::None) {
         result.action = dock_action;
     }
     const BridgeAction status_action = DrawSessionStatus(in, vp_size, scale);
     if (result.action.kind == BridgeAction::None) {
         result.action = status_action;
+    }
+    if (pairing) {
+        ImGui::PopStyleVar();
+    }
+
+    // Settings panel (U4): drawn last so it appears above the cards and dock.
+    // Always drawn when open; the action is only assigned when no earlier
+    // element produced one this frame (same discipline as the dock/status).
+    if (state->settings_open) {
+        BridgeAction panel_action;
+        draw_settings_panel(in, state, &panel_action);
+        if (result.action.kind == BridgeAction::None) {
+            result.action = panel_action;
+        }
+    }
+
+    // PIN panel (U4): the viewer-side pairing PIN on the in-scene monitor.
+    // Drawn after the chrome so it sits above the cards; emits no actions.
+    draw_pin_panel(in, state);
+
+    // Pair modal (U4): drawn last so its scrim covers everything above it.
+    if (state->pair_modal_open) {
+        BridgeAction modal_action;
+        draw_pair_modal(in, state, &modal_action);
+        if (result.action.kind == BridgeAction::None) {
+            result.action = modal_action;
+        }
     }
 
     ImGui::End();
