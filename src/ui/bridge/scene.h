@@ -9,10 +9,12 @@
 //   - Art box: the layers are authored on a 1620.8481 x 1200 canvas and drawn
 //     at a width of max(104vw, 140vh), centered. This guarantees parallax
 //     translation never reveals the art edges on any viewport.
-//   - Parallax smoothing: the cursor is eased toward its target each frame
-//     with the prototype's 0.055 per-frame factor converted to the time-based
-//     form ease = 1 - pow(1 - 0.055, dt*60) (dt clamped to <= 0.1 s), so the
-//     feel is identical at any vsync rate, not just the prototype's ~60 fps.
+//   - Parallax smoothing: the cursor is chased by a critically damped
+//     second-order spring (natural frequency 5 rad/s, time-corrected explicit
+//     Euler, dt clamped to <= 0.1 s) so the layers accelerate from rest and
+//     decelerate into place — a deliberate feel change from the prototype's
+//     constant-rate 0.055/frame exponential, requested after the U7 review.
+//     The settle time matches the old easing (~1 s to 95%).
 //   - Layer depth table (back -> front), from the handoff README parallax table
 //     and the prototype's data-ex/ey/es attributes:
 //
