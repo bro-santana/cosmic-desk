@@ -21,6 +21,7 @@ extern "C" {
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <random>
 #include <vector>
@@ -571,6 +572,10 @@ void Session::worker(std::string host_ip, int port, StreamPrefs prefs,
         refresh_allowed_ = true;
     }
     set_status(ViewerState::Streaming, "Streaming", "", http_port);
+    // Record the successful stream start for the Bridge card's "LAST LINK"
+    // line (UI migration U3).
+    settings_.set_host_last_connected(host_ip,
+                                      static_cast<int64_t>(std::time(nullptr)));
     // LiStartConnection() is NOT a blocking call: it brings every stage up,
     // fires connectionStarted() and returns, leaving the stream running on
     // moonlight-common-c's own threads. Falling straight through would reach

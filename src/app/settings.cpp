@@ -228,6 +228,10 @@ Settings Settings::load() {
                 if (entry.contains("paired") && entry["paired"].is_boolean()) {
                     h.paired = entry["paired"].get<bool>();
                 }
+                if (entry.contains("last_connected") &&
+                    entry["last_connected"].is_number_integer()) {
+                    h.last_connected = entry["last_connected"].get<int64_t>();
+                }
                 if (!h.address.empty()) {
                     settings.hosts.push_back(std::move(h));
                 }
@@ -333,6 +337,21 @@ std::vector<SavedHost> Settings::hosts_snapshot() const {
     return hosts;
 }
 
+void Settings::set_host_last_connected(const std::string& address,
+                                       int64_t unix_seconds) {
+    {
+        // Same shape as the other mutators: mutate under the lock, then
+        // persist after releasing it (save() takes the mutex itself).
+        std::lock_guard lock(mutex_);
+        auto it = find_host(hosts, trim(address));
+        if (it == hosts.end()) {
+            return;
+        }
+        it->last_connected = unix_seconds;
+    }
+    save();
+}
+
 int Settings::port_for(const std::string& address) const {
     std::lock_guard lock(mutex_);
     auto it = find_host(hosts, trim(address));
@@ -359,6 +378,7 @@ bool Settings::save() const {
             {"nickname", h.nickname},
             {"port", h.port},
             {"paired", h.paired},
+            {"last_connected", h.last_connected},
         });
     }
 

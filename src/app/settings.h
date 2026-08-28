@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -24,6 +25,8 @@ struct SavedHost {
     std::string nickname;  // Optional display name; ASCII-only (see ui/scale.h).
     int port = 0;          // 0 = follow Settings::port_base.
     bool paired = false;   // Last known pairing state; refreshed by the session worker.
+    int64_t last_connected = 0;  // Unix seconds of the last successful stream
+                                 // start; 0 = never (UI migration U3).
 };
 
 // Persistent user settings, stored as cosmic.json in config_dir().
@@ -55,6 +58,10 @@ struct Settings {
 
     // Sets the per-machine port override; 0 = follow the global port_base.
     bool set_host_port(const std::string& address, int port);
+
+    // Records the last successful stream start (unix seconds). Persists via
+    // save(); 0 clears it. Called by the viewer session (UI migration U3).
+    void set_host_last_connected(const std::string& address, int64_t unix_seconds);
 
     // Thread-safe copy of hosts for the UI (main thread).
     std::vector<SavedHost> hosts_snapshot() const;

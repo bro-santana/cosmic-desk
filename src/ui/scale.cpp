@@ -1,6 +1,7 @@
 // Cosmic Desk — UI scale implementation. See scale.h for the contract.
 
 #include "ui/scale.h"
+#include "ui/fonts.h"
 #include "ui/theme.h"
 
 #include <SDL.h>
@@ -12,10 +13,6 @@
 
 namespace cosmic::ui {
 namespace {
-
-// ImGui's built-in ProggyClean is embedded as a TTF, so it rasterizes cleanly
-// at any size; 13 px is its design size and therefore our 100% baseline.
-constexpr float kBaseFontPx = 13.0f;
 
 // A 4K panel at 100% is a legitimate configuration (small text is then the
 // user's choice), and no shipping desktop scales past 400%. Clamping keeps a
@@ -86,20 +83,16 @@ bool apply(SDL_Window* window) {
     StyleColorsDefault();
     ImGui::GetStyle().ScaleAllSizes(g_scale);
 
-    // Rasterize the default font at the scaled size instead of stretching the
-    // 13 px atlas (io.FontGlobalScale), which would only make it blurry.
+    // Rasterize the IBM Plex faces at the scaled size instead of stretching
+    // the 13 px atlas (io.FontGlobalScale), which would only make it blurry.
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
-    ImFontConfig font_config;
-    font_config.SizePixels = std::floor(kBaseFontPx * g_scale);
-    io.Fonts->AddFontDefault(&font_config);
-    io.Fonts->Build();
+    LoadFonts(g_scale);
     // The SDLRenderer2 backend only rebuilds its font texture when it has
     // none, so drop the stale one; the next NewFrame() recreates it.
     ImGui_ImplSDLRenderer2_DestroyFontsTexture();
 
-    std::printf("[ui] display scale %.2fx (font %.0f px)\n", g_scale,
-                font_config.SizePixels);
+    std::printf("[ui] display scale %.2fx\n", g_scale);
     std::fflush(stdout);
     return true;
 }
