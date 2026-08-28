@@ -34,6 +34,10 @@ and "run X, see Y" acceptance criteria. The interop sequencing (our host vs. sto
 Moonlight first; our viewer vs. stock Sunshine second) guarantees every bug has one
 known-good side.
 
+The UI has been replaced by the parallax Bridge launcher; see `docs/UI_MIGRATION.md`.
+The M0-M10 milestones below are complete; the UI milestones U0-U6 are complete, U7
+cleanup is this change.
+
 ## 2. Requirements checklist
 
 - [ ] Connect to a host by IP from the app (M2/M3)
@@ -263,11 +267,10 @@ cosmic-desk/
 │   │   ├── service_ctrl.{h,cpp}   # SCM helpers + port-listen readiness poll (Win)
 │   │   └── autostart.{h,cpp}      # HKCU Run key (Win) / XDG autostart .desktop (Linux)
 │   ├── ui/
-│   │   ├── host_list.cpp          # managed host list: pair/connect/nickname/remove
-│   │   ├── settings_window.cpp    # resolution/bitrate/port/autostart
-│   │   ├── pin_dialog.cpp         # ImGui modal; bridges to nvhttp::pin()
-│   │   ├── viewer_topbar.cpp      # monitor dropdown, fullscreen toggle, exit
-│   │   └── tray.cpp               # tray menu (Show, Pause hosting, Quit)
+│   │   ├── bridge/                  # parallax Bridge launcher (docs/UI_MIGRATION.md)
+│   │   ├── pin_dialog.cpp           # ImGui modal; bridges to nvhttp::pin()
+│   │   ├── viewer_topbar.cpp        # monitor dropdown, fullscreen toggle, exit
+│   │   └── tray.cpp                 # tray menu (Show, Pause hosting, Quit)
 │   ├── hostglue/
 │   │   ├── host.{h,cpp}           # start/stop Sunshine subsystems; owns its threads
 │   │   ├── pin_bridge.{h,cpp}     # pair request → UI queue → nvhttp::pin()

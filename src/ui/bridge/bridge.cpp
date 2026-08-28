@@ -1,0 +1,1092 @@
+// Cosmic Desk — Bridge UI overlay implementation (docs/UI_MIGRATION.md U2-U4).
+//
+// Draws the fullscreen ImGui window that sits above the parallax scene: the
+// monitor logo splash (on launch and on unhide from tray), the hosting beacon, and (U3) the
+// machine cards orbiting the scene center, the bottom dock and the session
+// status. The window background is
+// fully transparent so the scene shows through; all geometry derives from the
+// monitor screen rect (scene::screen_rect) and is specified in design px,
+// multiplied by ui::scale() at draw time like the rest of the Bridge UI.
+
+#include "ui/bridge/bridge.h"
+
+#include <SDL.h>
+#include <imgui.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <ctime>
+#include <string>
+
+#include "ui/bridge/design.h"
+#include "ui/bridge/panels.h"
+#include "ui/bridge/scene.h"
+#include "ui/bridge/text.h"
+#include "ui/fonts.h"
+#include "ui/scale.h"
+
+namespace cosmic::ui::bridge {
+
+namespace {
+
+// Boot splash: the screen logo holds at full opacity, then fades out. (The
+// BIOS text sequence was removed by request — the splash is just the logo on
+// the monitor screen now.) Replays each time the window is unhidden from the
+// tray (main.cpp resets boot_start_s on that transition).
+constexpr double kLogoHoldS = 1.0;
+constexpr double kLogoFadeS = 1.4;
+
+// Beacon pulse period (prototype `beacon` keyframes).
+constexpr float kBeaconPeriodS = 2.6f;
+
+// The monitor screen rect is 28.56% of the art-box width (scene.h
+// screen_rect); the beacon dot is 0.55% of the art-box width. The desk group
+// is drawn at es 1.03, so screen_rect's width includes that factor.
+constexpr float kScreenRectW = 0.2856f;
+constexpr float kDotArtW = 0.0055f;
+constexpr float kDeskEs = 1.03f;
+
+// --- U3: machine cards, dock, session status (design px) ---
+
+// Card box and content layout (handoff README "Machine cards").
+constexpr float kCardW = 256.0f;
+// Approximate card height, used only for the mouse-hover rectangles (the beam
+// and card hover tests). The card's actual height is measured from its content
+// in DrawMachineCard so the frame just fits the text/buttons.
+constexpr float kCardApproxH = 96.0f;
+constexpr float kCardPadX = 17.0f;
+constexpr float kCardPadTop = 15.0f;
+constexpr float kCardGap = 9.0f;
+constexpr float kEditBtnSize = 30.0f;  // rename (✎) ghost button, design px
+
+// Card depth (parallax weight) and float-bob period cycle by index (i % 3).
+constexpr float kCardDepths[] = {88.0f, 102.0f, 94.0f};
+constexpr float kCardBobPeriods[] = {7.0f, 8.5f, 9.5f};
+
+// Empty-state beacon card (8%/30% of the viewport, 270 wide).
+constexpr float kEmptyW = 270.0f;
+constexpr float kEmptyH = 170.0f;
+constexpr float kEmptyBobPeriodS = 6.5f;  // prototype `holo 6.5s`
+
+// Card colors (packed 0xRRGGBBAA, from the design tokens).
+constexpr uint32_t kCardBg = 0x101226F7;             // rgba(16,18,38,.97)
+constexpr uint32_t kCardBorderHover = 0x8AC7E5D9;    // rgba(138,199,229,.85)
+constexpr uint32_t kCardBorderSelected = 0xB897D3BF; // rgba(184,151,211,.75)
+constexpr uint32_t kEmptyBorder = 0x8AC49C8C;        // rgba(138,196,156,.55)
+constexpr uint32_t kPurpleBorder = 0xB897D380;       // rgba(184,151,211,.5)
+constexpr uint32_t kDockPairBg = 0x6A74BBE6;         // rgba(106,116,187,.9)
+constexpr uint32_t kDockPairHover = 0x8E6DB8F2;      // rgba(142,109,184,.95)
+
+// Tether beams (handoff README "Tether beams"): dashed lines from each card
+// center to the monitor beacon point. Alphas are 0.18/0.55/0.9 * 255; dash
+// sizes and the drift rates are design px (×scale at draw time).
+constexpr float kBeamIdleAlpha = 46.0f;    // 0.18 * 255
+constexpr float kBeamHoverAlpha = 140.0f;  // 0.55 * 255
+constexpr float kBeamDockAlpha = 230.0f;   // 0.9 * 255
+constexpr float kBeamDashOn = 3.0f;        // dash length, design px
+constexpr float kBeamDashGap = 7.0f;       // gap length, design px
+constexpr float kBeamDriftS = -8.0f;       // idle dash drift, design px/s
+constexpr float kBeamDockDriftS = -60.0f;  // docking dash drift, design px/s
+
+// Truncates `text` to fit within `max_width` device px at the current font and
+// tracking, appending ".." when truncated. Call with the target font pushed.
+std::string Ellipsize(const std::string& text, float tracking_em, float max_width) {
+    if (cosmic::ui::TextSpacedSize(text.c_str(), tracking_em).x <= max_width) {
+        return text;
+    }
+    std::string out;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const std::string candidate = text.substr(0, i + 1) + "..";
+        if (cosmic::ui::TextSpacedSize(candidate.c_str(), tracking_em).x > max_width) {
+            break;
+        }
+        out = candidate;
+    }
+    return out.empty() ? ".." : out;
+}
+
+// Formats a host's last_connected (unix seconds) as the card's status line.
+std::string LastLinkText(int64_t last_connected, int64_t now_unix) {
+    if (last_connected <= 0) {
+        return "NEVER LINKED";
+    }
+    const int64_t age = now_unix - last_connected;
+    if (age < 60) {
+        return "LAST LINK · JUST NOW";
+    }
+    if (age < 3600) {
+        return "LAST LINK · " + std::to_string(age / 60) + "M AGO";
+    }
+    if (age < 86400) {
+        return "LAST LINK · " + std::to_string(age / 3600) + "H AGO";
+    }
+    return "LAST LINK · " + std::to_string(age / 86400) + "D AGO";
+}
+
+// Trims whitespace and uppercases the inline-rename buffer (nicknames are
+// stored uppercase, matching the design).
+std::string NormalizeNickname(const char* text) {
+    std::string out(text);
+    const auto first = out.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "";
+    }
+    const auto last = out.find_last_not_of(" \t\r\n");
+    out = out.substr(first, last - first + 1);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return out;
+}
+
+// The card's address line: "address:port" (the per-machine override if set,
+// else the global port base), matching the prototype's addr field.
+std::string HostAddressLabel(const SavedHost& host, int port_base) {
+    return host.address + ":" + std::to_string(host.port > 0 ? host.port : port_base);
+}
+
+// Draws a button as a filled/bordered rect + centered TextSpaced label with an
+// InvisibleButton hit test. Colors are packed 0xRRGGBBAA tokens; the *_hover
+// variants replace their idle counterparts while hovered. A zero alpha skips
+// the fill/border. Returns true when clicked this frame; `hovered_out` (when
+// given) receives the InvisibleButton's hover state so callers can tell
+// interactive-widget hover apart from the non-interactive TextSpaced label.
+bool DrawButton(const char* id, const char* label, float tracking_em,
+                const ImVec2& pos, const ImVec2& size, uint32_t bg,
+                uint32_t bg_hover, uint32_t border, uint32_t border_hover,
+                uint32_t text, uint32_t text_hover, float scale,
+                bool* hovered_out = nullptr) {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImGui::SetCursorScreenPos(pos);
+    ImGui::InvisibleButton(id, size);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool clicked = ImGui::IsItemClicked();
+    if (hovered_out != nullptr) {
+        *hovered_out = hovered;
+    }
+    const uint32_t bg_col = hovered ? bg_hover : bg;
+    const uint32_t border_col = hovered ? border_hover : border;
+    const uint32_t text_col = hovered ? text_hover : text;
+    if ((bg_col & 0xFF) != 0) {
+        draw_list->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                                 ImGui::GetColorU32(Rgba(bg_col)));
+    }
+    if ((border_col & 0xFF) != 0) {
+        draw_list->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                           ImGui::GetColorU32(Rgba(border_col)), 0.0f, 0,
+                           1.0f * scale);
+    }
+    const ImVec2 label_size = cosmic::ui::TextSpacedSize(label, tracking_em);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(text_col));
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + (size.x - label_size.x) * 0.5f,
+                                     pos.y + (size.y - label_size.y) * 0.5f));
+    cosmic::ui::TextSpaced(label, tracking_em);
+    ImGui::PopStyleColor();
+    return clicked;
+}
+
+// Draws a dashed line from `a` to `b` on `dl`, walking the segment in ~2
+// device-px steps and emitting one AddLine per dash. Dash sizes, width and
+// dash_offset are in device px (callers multiply design px by ui::scale()); a
+// point is "on" when (arc_length + dash_offset) mod (dash_on + dash_gap) is
+// inside the on-window. The scene's SDL dashed-line helper is the reference;
+// this is the ImGui draw-list equivalent (different renderer, so not shared).
+void DrawDashedLineImGui(ImDrawList* dl, const ImVec2& a, const ImVec2& b,
+                         ImU32 color, float width, float dash_on, float dash_gap,
+                         float dash_offset) {
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float total = std::hypot(dx, dy);
+    if (total <= 0.0f) {
+        return;
+    }
+    const float period = dash_on + dash_gap;
+    if (period <= 0.0f) {
+        return;
+    }
+    const int steps = std::max(1, static_cast<int>(std::ceil(total / 2.0f)));
+    ImVec2 prev = a;
+    for (int i = 1; i <= steps; ++i) {
+        const float t = static_cast<float>(i) / steps;
+        const ImVec2 p(a.x + dx * t, a.y + dy * t);
+        float phase = std::fmod(total * t + dash_offset, period);
+        if (phase < 0.0f) {
+            phase += period;
+        }
+        if (phase < dash_on) {
+            dl->AddLine(prev, p, color, width);
+        }
+        prev = p;
+    }
+}
+
+// Orbit position for card `index` (design: cards spread around the upper arc
+// of the ring, gently swaying; see handoff README "Machine cards").
+ImVec2 CardOrbitCenter(const BridgeInput& in, const cosmic::ui::scene::CursorSmooth& cursor,
+                       int index, const ImVec2& vp_size, float scale) {
+    // Prototype (Cosmic Desk.dc.html): 0-indexed i, base = -pi/2 + (i-1)*1.15,
+    // sway = sin(now*0.09 + i*2.1)*0.07 + cx*0.05.
+    const float base = -3.14159265f / 2.0f + (index - 1) * 1.15f;
+    const float sway = 0.07f * std::sinf(0.09f * in.time_s + 2.1f * index) +
+                       0.05f * cursor.x;
+    const float ang = base + sway;
+    const float rx = std::min(0.26f * vp_size.x, 400.0f * scale);
+    const float ry = std::min(0.24f * vp_size.y, 235.0f * scale);
+    const float tilt = -8.0f * 3.14159265f / 180.0f;
+    const float depth = kCardDepths[index % 3];
+    const float ox = rx * std::cosf(ang);
+    const float oy = ry * std::sinf(ang);
+    // Tilted ellipse + the card's own parallax (depth * 0.35, like the
+    // prototype's data-depth transform).
+    float x = ox * std::cosf(tilt) - oy * std::sinf(tilt) - cursor.x * depth * 0.35f;
+    float y = ox * std::sinf(tilt) + oy * std::cosf(tilt) - cursor.y * depth * 0.35f;
+    // Clamp so the card stays fully in viewport with an 8px margin — but only
+    // while the scene is at rest. During the warp (U5) the clamp is skipped so
+    // the cards exit through the viewport edges and stay out while w ~ 1.
+    const float ax = 0.5f * vp_size.x;
+    const float ay = 0.47f * vp_size.y;
+    const float half_w = 128.0f * scale;
+    const float half_h = 82.0f * scale;
+    const float margin = 8.0f * scale;
+    if (in.warp <= 0.02f) {
+        x = std::clamp(x, -ax + half_w + margin, vp_size.x - ax - half_w - margin);
+        y = std::clamp(y, -ay + half_h + margin, vp_size.y - ay - half_h - margin);
+    }
+    // Warp (U5): orbit offsets multiply by 1 + w^2*5, accelerating the cards
+    // out through the viewport edges (prototype: x *= 1 + wt*wt*5).
+    x *= 1.0f + in.warp * in.warp * 5.0f;
+    y *= 1.0f + in.warp * in.warp * 5.0f;
+    // Float bob: translateY 0 <-> -8px, cosine ease, period by index.
+    const float period = kCardBobPeriods[index % 3];
+    const float bob = -8.0f * (0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / period)));
+    return ImVec2(ax + x, ay + y + bob * scale);
+}
+
+// Draws one machine card centered at `center` (device px). The card is a child
+// window pinned to the host's address so a rename never changes its ID; the
+// frame (bg + border + border-tab title) is drawn manually so the tab can
+// straddle the top border. `hovered` comes from draw_bridge (IsMouseHoveringRect
+// over the card rect) so the tether beams and the card share one hover state.
+// `scale_factor` (polish pass 2) is the eased hover scale: the FRAME (w/h,
+// border, halo, title tabs) grows around the center, while the fixed-size
+// buttons and typography stay put — ImGui text cannot scale, so the growth
+// reads as breathing room. Returns any action the card produced.
+BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
+                             const SavedHost& host, int index,
+                             const ImVec2& center, float scale, int64_t now_unix,
+                             bool hovered, float scale_factor) {
+    BridgeAction action;
+    // Warp (U5): cards scale up by 1 + 0.6*w around their center — the pos
+    // below derives from the center, so the card stays centered while it grows.
+    const float frame = (1.0f + 0.6f * in.warp) * scale_factor;
+    const float w = kCardW * scale * frame;
+
+    // Measure the content so the frame just fits it: top/bottom padding match
+    // the side padding (kCardPadTop), with the divider, the address line and
+    // the action row (height = the tallest of the CONNECT/PAIR/edit/rename
+    // controls) in between.
+    float addr_h = 0.0f;
+    {
+        ImGui::PushFont(cosmic::ui::FontMonoRegular());
+        ImGui::SetWindowFontScale(12.0f / 13.0f);
+        addr_h = cosmic::ui::TextSpacedSize("192.168.1.42:47989", 0.06f).y;
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+    }
+    float row_h = 0.0f;
+    {
+        ImGui::PushFont(cosmic::ui::FontMonoBold());
+        ImGui::SetWindowFontScale(9.5f / 13.0f);
+        row_h = std::max(row_h, ImGui::CalcTextSize("CONNECT").y + 16.0f * scale);
+        row_h = std::max(row_h, ImGui::CalcTextSize("PAIR").y + 14.0f * scale);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+        row_h = std::max(row_h, kEditBtnSize * scale);
+        // Rename row (input + OK) is the tallest possible row.
+        ImGui::PushFont(cosmic::ui::FontMonoRegular());
+        ImGui::SetWindowFontScale(11.0f / 13.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(7.0f * scale, 5.0f * scale));
+        row_h = std::max(row_h, ImGui::GetFrameHeight());
+        ImGui::PopStyleVar();
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+    }
+    const float content_h = kCardPadTop * scale + 1.0f * scale + kCardGap * scale +
+                            addr_h + kCardGap * scale + row_h + kCardPadTop * scale;
+    const float h = content_h * frame;
+    const ImVec2 pos(center.x - w * 0.5f, center.y - h * 0.5f);
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    // Card drop-shadow halo (polish pass 2): two stacked dark rects offset
+    // below the card, approximating the design's drop-shadow(0 0 22px
+    // rgba(6,8,20,.9)) + drop-shadow(0 14px 34px rgba(6,8,20,.7)). No blur is
+    // available in ImGui, so this is a cheap stepped shadow. Drawn on the
+    // parent draw list before the child so it sits under the card content.
+    const ImVec4 vignette = cosmic::ui::Rgba(kVignette);
+    // Outer shadow: larger, offset further down, softer.
+    draw_list->AddRectFilled(ImVec2(pos.x - 8.0f * scale, pos.y + 18.0f * scale),
+                             ImVec2(pos.x + w + 8.0f * scale,
+                                    pos.y + h + 26.0f * scale),
+                             ImGui::GetColorU32(
+                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.45f)));
+    // Inner shadow: tighter, stronger.
+    draw_list->AddRectFilled(ImVec2(pos.x - 3.0f * scale, pos.y + 7.0f * scale),
+                             ImVec2(pos.x + w + 3.0f * scale,
+                                    pos.y + h + 15.0f * scale),
+                             ImGui::GetColorU32(
+                                 ImVec4(vignette.x, vignette.y, vignette.z, 0.65f)));
+
+    // Card background (the child window itself is transparent).
+    draw_list->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h),
+                             ImGui::GetColorU32(Rgba(kCardBg)));
+
+    // Child window pinned to the address so a rename never changes its ID.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::SetCursorScreenPos(pos);
+    const std::string child_id = "##card" + host.address;
+    ImGui::BeginChild(child_id.c_str(), ImVec2(w, h), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Border: cyan-ish on hover, purple when selected, dim otherwise. Computed
+    // from the draw_bridge hover state, but DRAWN after the child below: inside
+    // the child the draw-list clip is inset by the window padding, so the
+    // perimeter would be clipped away.
+    const uint32_t border = hovered ? kCardBorderHover
+                            : (state->selected == host.address ? kCardBorderSelected : kBorderDim);
+
+    // Divider under the title row.
+    const float content_x = pos.x + kCardPadX * scale;
+    const float content_right = pos.x + w - kCardPadX * scale;
+    const float divider_y = pos.y + kCardPadTop * scale;
+    draw_list->AddLine(ImVec2(content_x, divider_y),
+                       ImVec2(content_right, divider_y),
+                       ImGui::GetColorU32(Rgba(kBorderDim)), 1.0f * scale);
+
+    // Address line (mono 12px, data cyan).
+    ImGui::PushFont(cosmic::ui::FontMonoRegular());
+    ImGui::SetWindowFontScale(12.0f / 13.0f);
+    const std::string addr_text = HostAddressLabel(host, in.port_base);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kCyan));
+    ImGui::SetCursorScreenPos(ImVec2(content_x, divider_y + 1.0f * scale + kCardGap * scale));
+    cosmic::ui::TextSpaced(addr_text.c_str(), 0.06f);
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    // Action row.
+    const float row_y = divider_y + 1.0f * scale + kCardGap * scale + addr_h + kCardGap * scale;
+
+    // Interactive-widget hover, accumulated while drawing the card's buttons
+    // and input: a click on one must not select the card. The TextSpaced
+    // labels (address, last-connected, tab) are non-interactive and must NOT
+    // block selection.
+    bool widget_hovered = false;
+
+    // The inline rename edits the NAME in the border-tab title (drawn after
+    // the child, below) — the action row stays as-is while renaming, so the
+    // edit visibly targets the machine's name rather than the last-link line.
+    {
+        // CONNECT (or PAIR for unpaired machines) + rename button, right
+        // aligned; the last-connected line ellipsizes into the remaining width.
+        const bool linking = in.connecting_address == host.address;
+        const char* connect_label = linking ? "LINKING..." : "CONNECT";
+        ImGui::PushFont(cosmic::ui::FontMonoBold());
+        ImGui::SetWindowFontScale(9.5f / 13.0f);
+        const ImVec2 connect_label_size = ImGui::CalcTextSize(connect_label);
+        const ImVec2 connect_size(connect_label_size.x + 26.0f * scale,
+                                  connect_label_size.y + 16.0f * scale);
+        const ImVec2 pair_label_size = ImGui::CalcTextSize("PAIR");
+        const ImVec2 pair_size(pair_label_size.x + 24.0f * scale,
+                               pair_label_size.y + 14.0f * scale);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+
+        ImGui::PushFont(cosmic::ui::FontMonoRegular());
+        ImGui::SetWindowFontScale(10.0f / 13.0f);
+        const ImVec2 edit_size(kEditBtnSize * scale, kEditBtnSize * scale);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+
+        const float btn_gap = 10.0f * scale;
+        // Rightmost button: CONNECT (paired) or PAIR (unpaired).
+        const ImVec2 cta_size = host.paired ? connect_size : pair_size;
+        const float cta_x = content_right - cta_size.x;
+        const float edit_x = cta_x - btn_gap - edit_size.x;
+        const float last_right = host.paired ? edit_x : cta_x;
+        const float last_max_w = last_right - btn_gap - content_x;
+
+        // Last-connected (mono 9.5px, muted, ellipsized).
+        ImGui::PushFont(cosmic::ui::FontMonoRegular());
+        ImGui::SetWindowFontScale(9.5f / 13.0f);
+        const std::string last_text =
+            Ellipsize(LastLinkText(host.last_connected, now_unix), 0.12f, last_max_w);
+        const float last_h = cosmic::ui::TextSpacedSize(last_text.c_str(), 0.12f).y;
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kMuted));
+        ImGui::SetCursorScreenPos(ImVec2(content_x, row_y + (cta_size.y - last_h) * 0.5f));
+        cosmic::ui::TextSpaced(last_text.c_str(), 0.12f);
+        ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+
+        // Rename (ghost) button — only for paired cards. The ✎ glyph is not in
+        // the font atlas, so the button carries an empty label and the pencil
+        // is drawn as ImDrawList primitives over the button rect.
+        if (host.paired) {
+            bool edit_hovered = false;
+            const ImVec2 edit_pos(edit_x, row_y);
+            if (DrawButton("##edit", "", 0.0f, edit_pos, edit_size,
+                           0, 0, kBorder, kPurple, kMuted, kText, scale,
+                           &edit_hovered)) {
+                state->renaming = host.address;
+                std::snprintf(state->rename_buf, sizeof(state->rename_buf), "%s",
+                              host.nickname.c_str());
+            }
+            widget_hovered |= edit_hovered;
+            // Pencil (✎ not in the atlas): a compact 45-degree pencil drawn as
+            // filled primitives — shaft parallelogram, triangular nib at the
+            // bottom-right end, metal ferrule and eraser block at the back.
+            // kMuted → kPurple on hover, mirroring the button's text. (ImVec2
+            // operators are disabled in this build, so all math is explicit.)
+            const ImU32 pencil_col =
+                ImGui::GetColorU32(Rgba(edit_hovered ? kPurple : kMuted));
+            const ImU32 ferrule_col = ImGui::GetColorU32(Rgba(kBorder));
+            const ImU32 eraser_col = ImGui::GetColorU32(Rgba(kTextDim));
+            ImDrawList* card_list = ImGui::GetWindowDrawList();
+            const ImVec2 pc(edit_pos.x + edit_size.x * 0.5f,
+                            edit_pos.y + edit_size.y * 0.5f);
+            const ImVec2 ax(0.7071f, 0.7071f);   // 45-degree axis
+            const ImVec2 nm(-0.7071f, 0.7071f);  // perpendicular
+            const float half = 9.0f * scale;     // half length of the pencil
+            const float hw = 2.2f * scale;       // shaft half width
+            const auto mul = [](const ImVec2& v, float s) {
+                return ImVec2(v.x * s, v.y * s);
+            };
+            const auto add = [](const ImVec2& a, const ImVec2& b) {
+                return ImVec2(a.x + b.x, a.y + b.y);
+            };
+            const auto sub = [](const ImVec2& a, const ImVec2& b) {
+                return ImVec2(a.x - b.x, a.y - b.y);
+            };
+            // Contiguous segments back -> tip, total length exactly 2*half:
+            // eraser (back .. e1), ferrule (e1 .. f1), shaft (f1 .. s1), nib
+            // triangle (s1 .. tip). Shared segment boundaries leave no gaps,
+            // nothing overhangs past `back`, and the nib tapers from the
+            // shaft's own width (no flare).
+            const ImVec2 tip = add(pc, mul(ax, half));           // nib point
+            const ImVec2 back = sub(pc, mul(ax, half));          // eraser end
+            const ImVec2 e1 = add(back, mul(ax, 2.6f * scale));  // eraser/ferrule
+            const ImVec2 f1 = add(back, mul(ax, 4.2f * scale));  // ferrule/shaft
+            const ImVec2 s1 = sub(tip, mul(ax, 4.5f * scale));   // shaft/nib
+            const float hw_back = hw * 1.15f;  // eraser + ferrule sit wider
+            // Eraser: small block at the very back, lighter tone.
+            card_list->AddQuadFilled(add(back, mul(nm, hw_back)),
+                                     sub(back, mul(nm, hw_back)),
+                                     sub(e1, mul(nm, hw_back)),
+                                     add(e1, mul(nm, hw_back)), eraser_col);
+            // Ferrule: metal band between the eraser and the shaft.
+            card_list->AddQuadFilled(add(e1, mul(nm, hw_back)),
+                                     sub(e1, mul(nm, hw_back)),
+                                     sub(f1, mul(nm, hw_back)),
+                                     add(f1, mul(nm, hw_back)), ferrule_col);
+            // Shaft.
+            card_list->AddQuadFilled(add(f1, mul(nm, hw)), sub(f1, mul(nm, hw)),
+                                     sub(s1, mul(nm, hw)), add(s1, mul(nm, hw)),
+                                     pencil_col);
+            // Nib: triangle tapering from the shaft's front edge to the point.
+            card_list->AddTriangleFilled(add(s1, mul(nm, hw)),
+                                         sub(s1, mul(nm, hw)), tip, pencil_col);
+        }
+
+        // CONNECT (green) or PAIR (ghost).
+        if (host.paired) {
+            ImGui::PushFont(cosmic::ui::FontMonoBold());
+            ImGui::SetWindowFontScale(9.5f / 13.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f * scale, 8.0f * scale));
+            ImGui::PushStyleColor(ImGuiCol_Button, Rgba(kGreenBtn));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Rgba(kGreenHover));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, Rgba(kGreenHover));
+            ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+            ImGui::SetCursorScreenPos(ImVec2(cta_x, row_y));
+            ImGui::BeginDisabled(linking || in.session_busy);
+            if (ImGui::Button(connect_label)) {
+                action.kind = BridgeAction::Connect;
+                action.address = host.address;
+            }
+            ImGui::EndDisabled();
+            widget_hovered |= ImGui::IsItemHovered();  // the CONNECT button
+            ImGui::PopStyleColor(4);
+            ImGui::PopStyleVar();
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
+        } else {
+            ImGui::PushFont(cosmic::ui::FontMonoBold());
+            ImGui::SetWindowFontScale(9.5f / 13.0f);
+            bool pair_hovered = false;
+            // Pairing while a session is busy would silently no-op, so disable.
+            ImGui::BeginDisabled(in.session_busy);
+            if (DrawButton("##pair", "PAIR", 0.2f, ImVec2(cta_x, row_y), pair_size,
+                           0, 0, kPurpleBorder, kPurple, kPurple, kText, scale,
+                           &pair_hovered)) {
+                // Open the Bridge's own Pair modal, prefilled with this host's
+                // address; the nickname/port fields start clean.
+                state->pair_modal_open = true;
+                std::snprintf(state->pair_address_buf, sizeof(state->pair_address_buf),
+                              "%s", host.address.c_str());
+                state->pair_nickname_buf[0] = '\0';
+                state->pair_use_default_port = true;
+                state->pair_port_input = 0;
+            }
+            ImGui::EndDisabled();
+            widget_hovered |= pair_hovered;
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
+        }
+    }
+
+    // Card click: single click selects, double-click on a paired card connects.
+    // A click on one of the card's interactive widgets never selects; a busy
+    // session never connects (a second connect would silently no-op).
+    if (hovered && !widget_hovered) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            state->selected = host.address;
+        }
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && host.paired &&
+            !in.session_busy) {
+            action.kind = BridgeAction::Connect;
+            action.address = host.address;
+        }
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    // Border, on the parent draw list so the perimeter is not clipped by the
+    // child's padded clip rect.
+    ImGui::GetWindowDrawList()->AddRect(
+        pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(Rgba(border)), 0.0f,
+        0, 1.0f * scale);
+
+    // Border-tab title: drawn after the child so the kBg tab covers the border
+    // at the top edge (the tab sits ON the border per the design).
+    // State mapping (docs/UI_MIGRATION.md U3 §3): online && paired -> LINK
+    // READY (green); paired -> STANDBY (amber); !paired -> NOT PAIRED (muted).
+    // `online` comes from the U6 presence poller.
+    const bool online = host.paired && in.presence.count(host.address) > 0 &&
+                        in.presence.at(host.address);
+    const uint32_t state_color = online ? kGreen : (host.paired ? kAmber : kMuted);
+    const char* state_label = online ? "LINK READY" : (host.paired ? "STANDBY" : "NOT PAIRED");
+    const float tab_top = pos.y - 9.0f * scale;
+    const float tab_h = 14.0f * scale;
+    const float tab_cy = tab_top + tab_h * 0.5f;
+
+    // Name, ellipsized to the tab's max width (62% of the card) — or, while
+    // renaming, an inline InputText occupying that full width in the tab
+    // itself, so the edit visibly targets the machine's name. Enter or focus
+    // loss saves, Esc cancels.
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(11.0f / 13.0f);
+    const bool renaming = state->renaming == host.address;
+    const float name_max_w = 0.62f * w - 14.0f * scale - 7.0f * scale - 6.0f * scale;
+    const std::string name = host.nickname.empty() ? host.address : host.nickname;
+    const std::string name_ell = Ellipsize(name, 0.08f, name_max_w);
+    const ImVec2 name_size = cosmic::ui::TextSpacedSize(name_ell.c_str(), 0.08f);
+    const float name_w = renaming ? name_max_w : name_size.x;
+    const float tab_x = pos.x + 8.0f * scale;
+    const float tab_w = 14.0f * scale + 7.0f * scale + 6.0f * scale + name_w;
+    draw_list->AddRectFilled(ImVec2(tab_x, tab_top),
+                             ImVec2(tab_x + tab_w, tab_top + tab_h),
+                             ImGui::GetColorU32(Rgba(kBg)));
+    // Status dot (7px) + soft glow.
+    const ImVec2 dot_center(tab_x + 7.0f * scale + 3.5f * scale, tab_cy);
+    draw_list->AddCircleFilled(dot_center, 3.5f * scale, ImGui::GetColorU32(Rgba(state_color)));
+    const float name_x = tab_x + 14.0f * scale + 7.0f * scale + 6.0f * scale;
+    if (renaming) {
+        // Widgets here land in the parent Bridge window (the child ended
+        // above), so scope the IDs per card.
+        ImGui::PushID(host.address.c_str());
+        const float frame_h = ImGui::GetFontSize() + 4.0f * scale;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(4.0f * scale, 2.0f * scale));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgba(kPanelInput));
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+        ImGui::SetCursorScreenPos(ImVec2(name_x, tab_cy - frame_h * 0.5f));
+        ImGui::SetNextItemWidth(name_max_w);
+        // Focus the input on the frame it appears so typing starts
+        // immediately; the flag clears when the rename ends so the next
+        // rename re-focuses.
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+        const ImGuiID focus_key = ImGui::GetID("##rename_focus");
+        if (storage->GetInt(focus_key, 0) == 0) {
+            ImGui::SetKeyboardFocusHere();
+            storage->SetInt(focus_key, 1);
+        }
+        const bool enter = ImGui::InputText(
+            "##rename_tab", state->rename_buf, sizeof(state->rename_buf),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        const bool esc = ImGui::IsKeyPressed(ImGuiKey_Escape);
+        const bool deactivated = ImGui::IsItemDeactivated();
+        // kPurple focus rect, matching the other inline edits.
+        ImGui::GetWindowDrawList()->AddRect(
+            ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+            ImGui::GetColorU32(Rgba(kPurple)), 0.0f, 0, 1.0f * scale);
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar();
+        if (esc) {
+            state->renaming.clear();
+            storage->SetInt(focus_key, 0);
+        } else if (enter || deactivated) {
+            action.kind = BridgeAction::Edit;
+            action.address = host.address;
+            action.nickname = NormalizeNickname(state->rename_buf);
+            state->renaming.clear();
+            storage->SetInt(focus_key, 0);
+        }
+        ImGui::PopID();
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+        ImGui::SetCursorScreenPos(ImVec2(name_x, tab_cy - name_size.y * 0.5f));
+        cosmic::ui::TextSpaced(name_ell.c_str(), 0.08f);
+        ImGui::PopStyleColor();
+    }
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    // State label, right-aligned on its own kBg tab.
+    ImGui::PushFont(cosmic::ui::FontMonoRegular());
+    ImGui::SetWindowFontScale(9.0f / 13.0f);
+    const ImVec2 state_size = cosmic::ui::TextSpacedSize(state_label, 0.14f);
+    const float state_tab_w = state_size.x + 14.0f * scale;
+    const float state_tab_x = pos.x + w - 8.0f * scale - state_tab_w;
+    draw_list->AddRectFilled(ImVec2(state_tab_x, pos.y - 7.0f * scale),
+                             ImVec2(state_tab_x + state_tab_w, pos.y - 7.0f * scale + tab_h),
+                             ImGui::GetColorU32(Rgba(kBg)));
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(state_color));
+    ImGui::SetCursorScreenPos(ImVec2(state_tab_x + 7.0f * scale,
+                                     pos.y - 7.0f * scale + (tab_h - state_size.y) * 0.5f));
+    cosmic::ui::TextSpaced(state_label, 0.14f);
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    return action;
+}
+
+// Empty state: a single beacon card at 8%/30% of the viewport when there are
+// no hosts.
+BridgeAction DrawEmptyCard(const BridgeInput& in, BridgeState* state,
+                           const ImVec2& vp_size, float scale) {
+    BridgeAction action;
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const float w = kEmptyW * scale;
+    const float h = kEmptyH * scale;
+    // Float bob: translateY 0 <-> -8px, cosine ease, 6.5s (prototype `holo`).
+    const float bob = -8.0f * (0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / kEmptyBobPeriodS)));
+    const ImVec2 pos(0.08f * vp_size.x, 0.30f * vp_size.y + bob * scale);
+
+    // Card frame: bg + green-tinted border.
+    draw_list->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h),
+                             ImGui::GetColorU32(Rgba(kCardBg)));
+    draw_list->AddRect(pos, ImVec2(pos.x + w, pos.y + h),
+                       ImGui::GetColorU32(Rgba(kEmptyBorder)), 0.0f, 0,
+                       1.0f * scale);
+
+    // Pulsing green dot (2s cosine pulse, like the hosting beacon).
+    const float pulse = 0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / 2.0f));
+    const ImVec2 dot_center(pos.x + 24.5f * scale, pos.y + 24.5f * scale);
+    const ImVec4 green = cosmic::ui::Rgba(cosmic::ui::kGreen);
+    draw_list->AddCircleFilled(dot_center, (4.5f + 6.0f * pulse) * scale,
+                               ImGui::GetColorU32(ImVec4(green.x, green.y, green.z,
+                                                         0.9f - 0.7f * pulse)));
+    draw_list->AddCircleFilled(dot_center, 4.5f * scale, ImGui::GetColorU32(green));
+
+    // Title.
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(11.0f / 13.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 20.0f * scale, pos.y + 41.0f * scale));
+    cosmic::ui::TextSpaced("NO MACHINES IN RANGE", 0.18f);
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    // Body copy (wrapped).
+    ImGui::PushFont(cosmic::ui::FontSansRegular());
+    ImGui::SetWindowFontScale(12.5f / 13.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kTextDim));
+    const char* body = "Pair your first machine to open a link across the void.";
+    const float body_w = (kEmptyW - 40.0f) * scale;
+    const ImVec2 body_size = ImGui::CalcTextSize(body, nullptr, false, body_w);
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 20.0f * scale, pos.y + 64.0f * scale));
+    ImGui::PushTextWrapPos(pos.x + 20.0f * scale + body_w);
+    ImGui::TextUnformatted(body);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    // PAIR A MACHINE button (green).
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(10.0f / 13.0f);
+    const ImVec2 btn_label = cosmic::ui::TextSpacedSize("PAIR A MACHINE", 0.22f);
+    const ImVec2 btn_size(btn_label.x + 32.0f * scale, btn_label.y + 20.0f * scale);
+    const ImVec2 btn_pos(pos.x + 20.0f * scale,
+                         pos.y + 64.0f * scale + body_size.y + 12.0f * scale);
+    if (DrawButton("##empty_pair", "PAIR A MACHINE", 0.22f, btn_pos, btn_size,
+                   kGreenBtn, kGreenHover, 0, 0, kText, kText, scale)) {
+        // Open the Bridge's own Pair modal with a clean address field.
+        state->pair_modal_open = true;
+        state->pair_address_buf[0] = '\0';
+        state->pair_nickname_buf[0] = '\0';
+        state->pair_use_default_port = true;
+        state->pair_port_input = 0;
+    }
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    return action;
+}
+
+// Bottom dock: PAIR MACHINE + SETTINGS, fixed at bottom center (never orbits).
+// The SETTINGS button flips state->settings_open directly — the panel is drawn
+// after the dock, so it appears above it.
+BridgeAction DrawDock(BridgeState* state, const ImVec2& vp_size, float scale) {
+    BridgeAction action;
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(11.0f / 13.0f);
+    const ImVec2 pair_label = cosmic::ui::TextSpacedSize("PAIR MACHINE", 0.24f);
+    const ImVec2 settings_label = cosmic::ui::TextSpacedSize("SETTINGS", 0.24f);
+    const ImVec2 pair_size(pair_label.x + 52.0f * scale, pair_label.y + 26.0f * scale);
+    const ImVec2 settings_size(settings_label.x + 52.0f * scale,
+                               settings_label.y + 26.0f * scale);
+    const float gap = 14.0f * scale;
+    const float dock_w = pair_size.x + gap + settings_size.x;
+    const float dock_x = (vp_size.x - dock_w) * 0.5f;
+    const float dock_y = vp_size.y - 34.0f * scale - pair_size.y;
+
+    if (DrawButton("##dock_pair", "PAIR MACHINE", 0.24f,
+                   ImVec2(dock_x, dock_y), pair_size,
+                   kDockPairBg, kDockPairHover, 0, 0, kText, kText, scale)) {
+        // Open the Bridge's own Pair modal with a clean address field.
+        state->pair_modal_open = true;
+        state->pair_address_buf[0] = '\0';
+        state->pair_nickname_buf[0] = '\0';
+        state->pair_use_default_port = true;
+        state->pair_port_input = 0;
+    }
+    if (DrawButton("##dock_settings", "SETTINGS", 0.24f,
+                   ImVec2(dock_x + pair_size.x + gap, dock_y), settings_size,
+                   0, 0, kBorderDim, kPurple, kPurple, kText, scale)) {
+        state->settings_open = !state->settings_open;
+    }
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    return action;
+}
+
+// Session status (bottom-left): DISCONNECT above the SESSION line.
+BridgeAction DrawSessionStatus(const BridgeInput& in, const ImVec2& vp_size, float scale) {
+    BridgeAction action;
+    const float status_x = 34.0f * scale;
+    const float status_bottom = vp_size.y - 32.0f * scale;
+
+    if (in.connected_or_connecting) {
+        ImGui::PushFont(cosmic::ui::FontMonoBold());
+        ImGui::SetWindowFontScale(9.0f / 13.0f);
+        const ImVec2 disc_label = cosmic::ui::TextSpacedSize("DISCONNECT", 0.20f);
+        const ImVec2 disc_size(disc_label.x + 24.0f * scale, disc_label.y + 14.0f * scale);
+        const ImVec2 disc_pos(status_x, status_bottom - 10.0f * scale - disc_size.y);
+        if (DrawButton("##disconnect", "DISCONNECT", 0.20f, disc_pos, disc_size,
+                       kRed, kRedHover, 0, 0, kText, kText, scale)) {
+            action.kind = BridgeAction::Disconnect;
+        }
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+    }
+
+    ImGui::PushFont(cosmic::ui::FontMonoRegular());
+    ImGui::SetWindowFontScale(10.0f / 13.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kCyan));
+    ImGui::SetCursorScreenPos(ImVec2(status_x, status_bottom));
+    const std::string session_line = "SESSION · " + in.session_label;
+    cosmic::ui::TextSpaced(session_line.c_str(), 0.24f);
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    return action;
+}
+
+}  // namespace
+
+BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
+    BridgeDrawResult result;
+
+    // The first call after launch (or after the window is unhidden from the
+    // tray, which resets boot_start_s) starts the logo splash.
+    if (state->boot_start_s < 0.0) {
+        state->boot_start_s = in.time_s;
+    }
+    const double t = in.time_s - state->boot_start_s;
+
+    const float scale = cosmic::ui::scale();
+    const ImVec2 vp_size = ImGui::GetMainViewport()->Size;
+    const int out_w = static_cast<int>(vp_size.x);
+    const int out_h = static_cast<int>(vp_size.y);
+    const SDL_FRect scr = cosmic::ui::scene::screen_rect(out_w, out_h);
+
+    // Fullscreen borderless window with no background: the scene shows
+    // through.
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size, ImGuiCond_Always);
+    ImGui::Begin("##Bridge", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoTitleBar |
+                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse |
+                     ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    // Hosting beacon (always): green dot + "HOSTING :port - n PAIRED" pill.
+    // The prototype anchors BOTH on the art box (dot top-left 52.9%/55.4%,
+    // pill top-left 54.2%/55.0%) — that puts them below the screen, on the
+    // monitor stand. Convert art-box fractions through the screen rect the
+    // same way as the tether-beam target (the screen rect is 38.86/29.57/
+    // 28.56/23.66% of the desk-group dest, which IS the on-screen art box).
+    const auto art_to_screen = [&scr](float ax, float ay) {
+        return ImVec2(scr.x + ((ax - 0.3886f) / 0.2856f) * scr.w,
+                      scr.y + ((ay - 0.2957f) / 0.2366f) * scr.h);
+    };
+
+    // Dot: 0.55% of the art-box width (aspect 1), so 0.0055/0.2856 of the
+    // screen rect's width in device px; floored at a 1*scale radius so it
+    // never vanishes in a small window. The anchor is the dot's TOP-LEFT
+    // (prototype div), so the circle center is top-left + radius.
+    const float dot_radius =
+        std::max(kDotArtW / kScreenRectW * scr.w * 0.5f, 1.0f * scale);
+    const ImVec2 dot_tl = art_to_screen(0.529f, 0.554f);
+    const ImVec2 beacon(dot_tl.x + dot_radius, dot_tl.y + dot_radius);
+
+    // 2.6s pulse, eased 0..1 (prototype `beacon` keyframes).
+    const float pulse =
+        0.5f - 0.5f * std::cosf(2.0f * 3.14159265f * (in.time_s / kBeaconPeriodS));
+
+    const ImVec4 green = cosmic::ui::Rgba(cosmic::ui::kGreen);
+    // Soft outer glow: kGreen at ~0.35 * pulse alpha, 1.6x the dot radius.
+    draw_list->AddCircleFilled(
+        beacon, dot_radius * 1.6f,
+        ImGui::GetColorU32(ImVec4(green.x, green.y, green.z, 0.35f * pulse)));
+    // Solid dot.
+    draw_list->AddCircleFilled(beacon, dot_radius, ImGui::GetColorU32(green));
+
+    // Pill: mono text on a dark rounded rect, sized to the text via
+    // TextSpacedSize plus 6x2 design px padding. The middot (U+00B7, "\xc2\xb7"
+    // in UTF-8) is in the atlas since the Latin-1 glyph range was added.
+    char pill_text[64];
+    std::snprintf(pill_text, sizeof(pill_text), "HOSTING :%d \xc2\xb7 %d PAIRED",
+                  in.port_base, in.paired_count);
+    ImGui::PushFont(cosmic::ui::FontMonoRegular());
+    ImGui::SetWindowFontScale(9.0f / 13.0f);
+    const ImVec2 pill_text_size = cosmic::ui::TextSpacedSize(pill_text, 0.18f);
+    const float pad_x = 6.0f * scale;
+    const float pad_y = 2.0f * scale;
+    const ImVec2 pill_size(pill_text_size.x + 2.0f * pad_x,
+                           pill_text_size.y + 2.0f * pad_y);
+    // Pill top-left at 54.2%/55.0% of the art box (prototype anchors it
+    // absolutely, not relative to the dot).
+    const ImVec2 pill_min = art_to_screen(0.542f, 0.550f);
+    const ImVec2 pill_max(pill_min.x + pill_size.x, pill_min.y + pill_size.y);
+    // rgba(16,18,38,.85) — the design's deep indigo at 85% opacity.
+    const ImU32 pill_bg = ImGui::GetColorU32(
+        ImVec4(16.0f / 255.0f, 18.0f / 255.0f, 38.0f / 255.0f, 0.85f));
+    draw_list->AddRectFilled(pill_min, pill_max, pill_bg, 3.0f * scale);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(green));
+    ImGui::SetCursorScreenPos(ImVec2(pill_min.x + pad_x, pill_min.y + pad_y));
+    cosmic::ui::TextSpaced(pill_text, 0.18f);
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    // ---- U3: machine cards, bottom dock, session status ----
+    // While pairing, the chrome fades to 25% so the monitor PIN stays
+    // prominent (design: "scrim + other UI fade to 25%"). The Settings panel
+    // below is deliberately NOT faded - it stays at full opacity during
+    // pairing (the pair modal's scrim still blocks clicks over it).
+    const bool pairing = in.pairing_active;
+    if (pairing) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.25f);
+    }
+    const cosmic::ui::scene::CursorSmooth cursor = cosmic::ui::scene::smoothed_cursor();
+    const int64_t now_unix = static_cast<int64_t>(std::time(nullptr));
+
+    if (in.hosts.empty()) {
+        // Empty state: a single beacon card at 8%/30% when there are no hosts.
+        result.action = DrawEmptyCard(in, state, vp_size, scale);
+    } else {
+        // Tether beams (handoff README "Tether beams"): dashed lines from each
+        // card center to the monitor beacon point, drawn before the cards so
+        // the cards sit on top. Skipped while warping (the cards fly out).
+        if (in.warp <= 0.02f) {
+            // Target: 53.1%/41.4% of the desk layer rect. The screen rect is
+            // 38.86/29.57/28.56/23.66% of the art box, so the target sits at
+            // ((0.531-0.3886)/0.2856, (0.414-0.2957)/0.2366) of the screen
+            // rect's size.
+            const ImVec2 beam_target(
+                scr.x + ((0.531f - 0.3886f) / 0.2856f) * scr.w,
+                scr.y + ((0.414f - 0.2957f) / 0.2366f) * scr.h);
+            for (size_t i = 0; i < in.hosts.size(); ++i) {
+                const ImVec2 center =
+                    CardOrbitCenter(in, cursor, static_cast<int>(i), vp_size, scale);
+                const SavedHost& host = in.hosts[i];
+                // Hover: the card rect (center ± half the warped + scaled
+                // size) — the same pre-ease scale the card loop uses, so the
+                // beam and the card share one hover state.
+                const auto scale_it = state->card_scale.find(host.address);
+                const float hover_scale =
+                    scale_it != state->card_scale.end() ? scale_it->second : 1.0f;
+                const float cw = kCardW * scale * (1.0f + 0.6f * in.warp) * hover_scale;
+                const float ch = kCardApproxH * scale * (1.0f + 0.6f * in.warp) * hover_scale;
+                const bool hovered = ImGui::IsMouseHoveringRect(
+                    ImVec2(center.x - cw * 0.5f, center.y - ch * 0.5f),
+                    ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
+                // Idle: kBeam at 18% alpha, 1 px, dash drifting −8 px/s.
+                // Hovered: 55% alpha, 1.6 px. Docking: kBeamGreen at 90%,
+                // dash drifting −60 px/s.
+                const bool docking = in.connecting_address == host.address;
+                uint32_t beam_token = kBeam;
+                float beam_alpha = kBeamIdleAlpha;
+                float beam_width = 1.0f * scale;
+                float beam_drift = kBeamDriftS;
+                if (docking) {
+                    beam_token = kBeamGreen;
+                    beam_alpha = kBeamDockAlpha;
+                    beam_drift = kBeamDockDriftS;
+                } else if (hovered) {
+                    beam_alpha = kBeamHoverAlpha;
+                    beam_width = 1.6f * scale;
+                }
+                const ImVec4 beam_rgba = cosmic::ui::Rgba(beam_token);
+                const ImU32 beam_col = ImGui::GetColorU32(
+                    ImVec4(beam_rgba.x, beam_rgba.y, beam_rgba.z, beam_alpha / 255.0f));
+                DrawDashedLineImGui(draw_list, center, beam_target, beam_col,
+                                    beam_width, kBeamDashOn * scale,
+                                    kBeamDashGap * scale,
+                                    beam_drift * in.time_s * scale);
+            }
+        }
+        // Machine cards orbit the scene center on a tilted ellipse.
+        // Hover scale (polish pass 2): each card eases toward 1.08 while
+        // hovered — the design's 1.1 is too much for the fixed text layout;
+        // 1.08 is the readable approximation. The springy overshoot of the
+        // design's cubic-bezier(.2,1.6,.4,1) is approximated by a fast
+        // exponential ease (k per frame from the frame dt).
+        const double now_s = in.time_s;
+        // dt for the ease; the -1.0 sentinel marks the first frame, which is
+        // treated as a 1/60 s step (the clamp formula would otherwise read the
+        // sentinel as a huge gap and clamp to 0.1).
+        double dt;
+        if (state->last_scale_time_s < 0.0) {
+            dt = 1.0 / 60.0;
+        } else {
+            dt = std::clamp(now_s - state->last_scale_time_s, 0.0, 0.1);
+        }
+        state->last_scale_time_s = now_s;
+        const float k = 1.0f - static_cast<float>(std::pow(1.0 - 0.22, dt * 60.0));
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        for (size_t i = 0; i < in.hosts.size(); ++i) {
+            const ImVec2 center =
+                CardOrbitCenter(in, cursor, static_cast<int>(i), vp_size, scale);
+            const SavedHost& host = in.hosts[i];
+            // Current eased scale for this card (missing = 1.0). The hover
+            // test uses this pre-ease scale so the rect matches the drawn card
+            // (one frame of lag is imperceptible at this ease rate).
+            auto scale_it = state->card_scale.find(host.address);
+            if (scale_it == state->card_scale.end()) {
+                scale_it = state->card_scale.emplace(host.address, 1.0f).first;
+            }
+            float& cur = scale_it->second;
+            const float cw = kCardW * scale * (1.0f + 0.6f * in.warp) * cur;
+            const float ch = kCardApproxH * scale * (1.0f + 0.6f * in.warp) * cur;
+            const bool hovered = ImGui::IsMouseHoveringRect(
+                ImVec2(center.x - cw * 0.5f, center.y - ch * 0.5f),
+                ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
+            cur += ((hovered ? 1.08f : 1.0f) - cur) * k;
+            const float scale_factor = cur;
+
+            // Depth-of-field far-card fade (polish pass 2): cards far from the
+            // cursor dim toward the design's brightness falloff. Blur itself is
+            // not possible in ImGui, so it is approximated with opacity.
+            const float dist = std::hypot(mouse.x - center.x, mouse.y - center.y);
+            const float dist_px = std::isfinite(dist) ? dist / scale : 0.0f;
+            const float blur = std::min(
+                1.4f, std::max(0.0f, (dist_px - 240.0f) / 500.0f) * 1.4f);
+            const float fade = 1.0f - 0.30f * (blur / 1.4f);
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
+            const BridgeAction card_action =
+                DrawMachineCard(in, state, host, static_cast<int>(i), center,
+                                scale, now_unix, hovered, scale_factor);
+            ImGui::PopStyleVar();
+            if (result.action.kind == BridgeAction::None) {
+                result.action = card_action;
+            }
+        }
+    }
+
+    // Bottom dock + session status (fixed, never orbit). Always drawn; only
+    // the action assignment is gated so a card action on this frame does not
+    // make the dock/status flicker out for one frame.
+    const BridgeAction dock_action = DrawDock(state, vp_size, scale);
+    if (result.action.kind == BridgeAction::None) {
+        result.action = dock_action;
+    }
+    const BridgeAction status_action = DrawSessionStatus(in, vp_size, scale);
+    if (result.action.kind == BridgeAction::None) {
+        result.action = status_action;
+    }
+    if (pairing) {
+        ImGui::PopStyleVar();
+    }
+
+    // Settings panel (U4): drawn last so it appears above the cards and dock.
+    // Always drawn when open; the action is only assigned when no earlier
+    // element produced one this frame (same discipline as the dock/status).
+    if (state->settings_open) {
+        BridgeAction panel_action;
+        draw_settings_panel(in, state, &panel_action);
+        if (result.action.kind == BridgeAction::None) {
+            result.action = panel_action;
+        }
+    }
+
+    // PIN panel (U4): the viewer-side pairing PIN on the in-scene monitor.
+    // Drawn after the chrome so it sits above the cards; emits no actions.
+    draw_pin_panel(in, state);
+
+    // Pair modal (U4): drawn last so its scrim covers everything above it.
+    if (state->pair_modal_open) {
+        BridgeAction modal_action;
+        draw_pair_modal(in, state, &modal_action);
+        if (result.action.kind == BridgeAction::None) {
+            result.action = modal_action;
+        }
+    }
+
+    ImGui::End();
+    ImGui::PopStyleColor();
+
+    // Screen-logo opacity for the scene: full while the splash holds, then
+    // fading to 0 over the 1.4s window.
+    float screen_logo_alpha = 1.0f;
+    if (t >= kLogoHoldS) {
+        screen_logo_alpha = static_cast<float>(
+            std::clamp((kLogoHoldS + kLogoFadeS - t) / kLogoFadeS, 0.0, 1.0));
+    }
+    result.screen_logo_alpha = screen_logo_alpha;
+    return result;
+}
+
+}  // namespace cosmic::ui::bridge

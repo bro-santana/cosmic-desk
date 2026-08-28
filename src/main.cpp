@@ -4,16 +4,19 @@
 // M0 scope: SDL window + Dear ImGui + tray icon + settings file. The host
 // threads (M1) and the viewer session (M2) plug into this loop later.
 
+#include "app/autostart.h"
+#include "app/presence.h"
 #include "app/settings.h"
 #include "app/service_ctrl.h"
 #include "app/single_instance.h"
 #include "app/state.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
-#include "ui/host_list.h"
+#include "ui/bridge/bridge.h"
+#include "ui/bridge/design.h"
+#include "ui/bridge/scene.h"
 #include "ui/pin_dialog.h"
 #include "ui/scale.h"
-#include "ui/settings_window.h"
 #include "ui/theme.h"
 #include "ui/tray.h"
 #include "ui/viewer_topbar.h"
@@ -43,8 +46,10 @@
 
 namespace {
 
-constexpr int kWindowWidth = 1000;
-constexpr int kWindowHeight = 640;
+// Default window size: 16:9-ish to match the Bridge UI's design canvas
+// (docs/UI_MIGRATION.md U0).
+constexpr int kWindowWidth = 1280;
+constexpr int kWindowHeight = 720;
 
 // The vendored host resolves SUNSHINE_ASSETS_DIR="assets" (HLSL/GL shaders)
 // relative to the CWD, and autostart/menu launches don't set it; chdir makes
@@ -327,6 +332,9 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
+    // U0 scene; draws behind the UI in MainWindow mode.
+    cosmic::ui::scene::init(renderer);
+
     // HiDPI (see ui/scale.h): the DPI-awareness hint above gives us the raw
     // pixel grid, so ImGui has to be told the display scale or everything it
     // draws comes out at 96-DPI sizes on a 4K panel. Must follow the backend
@@ -353,6 +361,9 @@ int main(int argc, char** argv) {
         }
         SDL_SetWindowSize(window, width, height);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        // The Bridge layout needs room.
+        SDL_SetWindowMinimumSize(window, static_cast<int>(960 * ui_scale),
+                                 static_cast<int>(540 * ui_scale));
     }
 
     cosmic::Settings settings = cosmic::Settings::load();
@@ -372,6 +383,10 @@ int main(int argc, char** argv) {
 
     cosmic::AppMode mode = start_hidden ? cosmic::AppMode::HiddenToTray : cosmic::AppMode::MainWindow;
     bool running = true;
+    // Set on the hidden->shown transition so the Bridge replays its logo
+    // splash (bridge_state is declared after the tray callbacks that need to
+    // request the replay, hence the flag instead of a direct reset).
+    bool replay_boot_splash = false;
     // Set when the tray Quit item is clicked, so main() can tell a tray quit
     // apart from other exits (plan M8.2: in service mode a tray quit must exit
     // with ERROR_SHUTDOWN_IN_PROGRESS so cosmicsvc stops instead of respawning
@@ -382,6 +397,9 @@ int main(int argc, char** argv) {
         asset_path(tray_icon_name()),
         {
             [&] {
+                if (mode == cosmic::AppMode::HiddenToTray) {
+                    replay_boot_splash = true;
+                }
                 mode = cosmic::AppMode::MainWindow;
                 SDL_ShowWindow(window);
                 SDL_RaiseWindow(window);
@@ -402,11 +420,19 @@ int main(int argc, char** argv) {
         SDL_ShowWindow(window);
     }
 
+    // Address of the machine a Connect is in flight to ("" = none). Drives the
+    // Bridge card's LINKING... state; kept while the session is Connecting or
+    // Streaming and cleared when it returns to Idle/Failed.
+    std::string connecting_address;
+
     if (!autoconnect_ip.empty()) {
+        // U5: the autoconnect path warps out like a card Connect. Seed the
+        // connecting address so the STREAMING label can show the nickname.
+        connecting_address = autoconnect_ip;
+        cosmic::ui::scene::set_warp_target(1.0f);
+        cosmic::ui::scene::trigger_warp_flash();
         g_session->start_connect(autoconnect_ip, settings.port_base);
     }
-
-    bool show_settings = false;
 
     // Viewer renderer is created lazily once the negotiated stream dimensions
     // are known and destroyed when leaving Viewing mode (plan M2.4).
@@ -426,11 +452,20 @@ int main(int argc, char** argv) {
     // streaming.
     cosmic::ui::TopBarState topbar_state;
 
-    // Managed host list (plan M3.x): persistent selection + modal state.
-    cosmic::ui::HostListState host_list_state;
+    // Bridge overlay state (docs/UI_MIGRATION.md U2): persists the boot
+    // sequence across frames (and across hide/show cycles).
+    cosmic::ui::bridge::BridgeState bridge_state;
+    // Last host set handed to the presence poller (U6): presence::start is
+    // cheap, but we only call it when the address/port list actually changed
+    // (pair success adds a host; Edit/Remove change entries) so the worker's
+    // poll set stays in sync without a per-frame call.
+    std::vector<std::pair<std::string, int>> last_poll_hosts;
+    // Settings edits save on the Settings panel's close transition, not per
+    // tick (docs/UI_MIGRATION.md U4); the shutdown save() is the fallback.
+    bool settings_dirty = false;
     // Pair latch: while an explicit Pair is in flight, the main loop turns the
-    // session status into a PairProgress for the Pair modal. pair_error is
-    // sticky — it stays set until the next StartPair, since state==Failed is
+    // session status into a PairProgress for the Bridge's Pair modal. pair_error
+    // is sticky — it stays set until the next StartPair, since state==Failed is
     // true for only one frame.
     bool pair_in_flight = false;
     std::string pair_address;
@@ -545,6 +580,9 @@ int main(int argc, char** argv) {
         // A second launch signaled us to show the window (plan M8.1): leave
         // the tray and raise the window, same as the tray Show item.
         if (cosmic::single_instance::poll_show_request()) {
+            if (mode == cosmic::AppMode::HiddenToTray) {
+                replay_boot_splash = true;
+            }
             mode = cosmic::AppMode::MainWindow;
             SDL_ShowWindow(window);
             SDL_RaiseWindow(window);
@@ -561,6 +599,9 @@ int main(int argc, char** argv) {
             g_pending_client = std::move(polled_client);
             show_pin_dialog = true;
             pin_result_ok = false;
+            if (mode == cosmic::AppMode::HiddenToTray) {
+                replay_boot_splash = true;
+            }
             mode = cosmic::AppMode::MainWindow;
             SDL_ShowWindow(window);
             SDL_RaiseWindow(window);
@@ -570,8 +611,17 @@ int main(int argc, char** argv) {
         // streaming, the window shows the viewer placeholder instead of the
         // main UI. Hiding to the tray still wins so tray behavior is kept.
         cosmic::viewer::SessionStatus session_status = g_session->status();
-        // Build the Pair modal's live feedback from the session status, and
-        // resolve the pair latch. This is only correct because begin_worker
+        // Once the session settles (Idle/Failed), the LINKING... card clears:
+        // the connect either finished (Streaming keeps it) or gave up.
+        if (session_status.state == cosmic::viewer::ViewerState::Idle ||
+            session_status.state == cosmic::viewer::ViewerState::Failed) {
+            connecting_address.clear();
+            // U5: an ended/failed session warps the scene back to the Bridge.
+            // Idempotent — the target is already 0 when no session is active.
+            cosmic::ui::scene::set_warp_target(0.0f);
+        }
+        // Build the Bridge Pair modal's live feedback from the session status,
+        // and resolve the pair latch. This is only correct because begin_worker
         // publishes Connecting synchronously, so the latch never sees a stale
         // previous terminal state on the frame after Pair is clicked.
         cosmic::ui::PairProgress pairing;
@@ -596,16 +646,15 @@ int main(int argc, char** argv) {
                 break;
             case cosmic::viewer::ViewerState::Idle:
                 // Handshake succeeded: the worker has added the machine with
-                // paired=true, so apply the port override the user chose, close
-                // the modal, and select the machine so Connect is one click away.
+                // paired=true, so apply the port override the user chose and
+                // close the Bridge's Pair modal.
                 pair_in_flight = false;
-                host_list_state.pair_modal_open = false;
+                bridge_state.pair_modal_open = false;  // the Bridge's own modal
                 if (!pair_address.empty()) {
                     settings.set_host_port(pair_address, pair_port);
                     if (!pair_nickname.empty()) {
                         settings.set_host_nickname(pair_address, pair_nickname);
                     }
-                    host_list_state.selected = pair_address;
                 }
                 break;
             case cosmic::viewer::ViewerState::Streaming:
@@ -613,8 +662,11 @@ int main(int argc, char** argv) {
                         // excluded by busy() and AppMode::Viewing.
             }
         }
-        pairing.error = pair_error;
-        if (session_status.state == cosmic::viewer::ViewerState::Streaming) {
+        // U5: enter Viewing only once the warp has carried the scene out (warp
+        // progress >= 0.95). While Streaming with the warp still rising, stay
+        // in MainWindow — the scene keeps warping and the bridge keeps drawing.
+        if (session_status.state == cosmic::viewer::ViewerState::Streaming &&
+            cosmic::ui::scene::warp_progress() >= 0.95f) {
             if (mode != cosmic::AppMode::HiddenToTray) {
                 if (mode != cosmic::AppMode::Viewing) {
                     // Entering Viewing: keep the fullscreen video visible when
@@ -635,6 +687,9 @@ int main(int argc, char** argv) {
             // the hints, and tear down the video renderer.
             leave_viewing_ui(window, &input_grabbed, &vrenderer_active);
             SDL_ShowWindow(window);
+            // U5: warp back to the Bridge — the scene reassembles while the
+            // bridge shows.
+            cosmic::ui::scene::set_warp_target(0.0f);
         }
 
         if (mode == cosmic::AppMode::HiddenToTray) {
@@ -767,61 +822,96 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        const float ui_scale = cosmic::ui::scale();
-        ImGui::SetNextWindowPos(ImVec2(20 * ui_scale, 20 * ui_scale),
-                                ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(680 * ui_scale, 460 * ui_scale),
-                                 ImGuiCond_FirstUseEver);
-        ImGui::Begin("Cosmic Desk");
-        // Keep UI strings ASCII-only: the default ImGui font has no glyphs
-        // beyond Basic Latin, so anything else renders as '?'.
-        ImGui::TextUnformatted("Cosmic Desk is running.");
-        ImGui::Separator();
-        ImGui::Text("Config file: %s", cosmic::Settings::config_file().string().c_str());
-        // Hosting status line (plan M3.3): paired_client_count() is cached
-        // internally, so polling it every frame costs no disk I/O.
-        if (hosting_ok) {
-            ImGui::Text("Hosting on :%d - %d client(s) paired", settings.port_base,
-                        cosmic::hostglue::paired_client_count());
-        } else {
-            ImGui::TextUnformatted("Hosting unavailable (see log)");
-        }
-        ImGui::Text("Resolution mode: %s", cosmic::to_string(settings.resolution_mode));
-        ImGui::Text("Bitrate: %d kbps", settings.bitrate_kbps);
-        ImGui::Text("Tray: %s", has_tray ? "active" : "unavailable");
-        ImGui::Separator();
-        // Managed host list (plan M3.x): pair/connect/edit/remove machines by
-        // name. Draws its own buttons and modals; returns an action applied
-        // after the frame. The Settings toggle stays here (there is no Settings
-        // action) so it reads naturally alongside the list's buttons.
-        const std::vector<cosmic::SavedHost> hosts_snapshot = settings.hosts_snapshot();
-        const cosmic::ui::HostListAction host_list_action = cosmic::ui::draw_host_list(
-            hosts_snapshot, pairing, settings.port_base, g_session->busy(),
-            &host_list_state);
-        if (ImGui::Button("Settings")) {
-            show_settings = !show_settings;
-        }
-        ImGui::Text("Session: %s", cosmic::viewer::to_string(session_status.state));
-        ImGui::TextWrapped("%s", session_status.message.c_str());
-        // Auto-pair fallback display (plan M3.x): while the Pair modal owns the
-        // explicit path, this inline block is the display for the auto-pair
-        // handshake that runs on the Connect path when the host forgot us.
-        // Gated on !pair_in_flight so the two never compete for the PIN.
-        if ((session_status.state == cosmic::viewer::ViewerState::PairingNeedPin ||
-             session_status.state == cosmic::viewer::ViewerState::PairingInProgress) &&
-            !session_status.pin.empty() && !pair_in_flight) {
-            if (session_status.state == cosmic::viewer::ViewerState::PairingNeedPin) {
-                ImGui::TextUnformatted("Enter this PIN on the host:");
+        // Bridge overlay (docs/UI_MIGRATION.md U2-U3): fullscreen window with
+        // the in-scene monitor UI. The only UI in MainWindow mode; the host-side
+        // PIN dialog is drawn after it so it stays on top.
+        cosmic::ui::bridge::BridgeInput bridge_input;
+        bridge_input.hosting_ok = hosting_ok;
+        bridge_input.port_base = settings.port_base;
+        bridge_input.resolution_mode = settings.resolution_mode;
+        bridge_input.fps = settings.fps;
+        bridge_input.bitrate_kbps = settings.bitrate_kbps;
+        bridge_input.autostart = settings.autostart;
+        bridge_input.paired_count = cosmic::hostglue::paired_client_count();
+        bridge_input.time_s = static_cast<double>(SDL_GetTicks64()) / 1000.0;
+        bridge_input.hosts = settings.hosts_snapshot();
+        // U6: keep the presence poller's target set in sync with the current
+        // hosts (address + resolved port). Only call start() when the set
+        // actually changed — pair success adds a host, Edit/Remove change
+        // entries — so the worker's poll set stays current without a per-frame
+        // call (start() just swaps targets when the worker is already alive).
+        {
+            std::vector<std::pair<std::string, int>> poll_hosts;
+            poll_hosts.reserve(bridge_input.hosts.size());
+            for (const cosmic::SavedHost& host : bridge_input.hosts) {
+                poll_hosts.emplace_back(host.address, settings.port_for(host.address));
             }
-            ImGui::SetWindowFontScale(2.0f);
-            ImGui::TextUnformatted(session_status.pin.c_str());
-            ImGui::SetWindowFontScale(1.0f);
+            if (poll_hosts != last_poll_hosts) {
+                cosmic::presence::start(poll_hosts);
+                last_poll_hosts = std::move(poll_hosts);
+            }
         }
-        ImGui::Separator();
-        ImGui::TextWrapped(
-            "Closing this window hides Cosmic Desk to the tray; hosting keeps running. "
-            "Use the tray menu to show it again or to quit.");
-        ImGui::End();
+        bridge_input.presence = cosmic::presence::snapshot();
+        bridge_input.warp = cosmic::ui::scene::warp_progress();
+        switch (session_status.state) {
+        case cosmic::viewer::ViewerState::Idle:
+        case cosmic::viewer::ViewerState::Failed:
+            bridge_input.session_label = "IDLE";
+            break;
+        case cosmic::viewer::ViewerState::PairingNeedPin:
+        case cosmic::viewer::ViewerState::PairingInProgress:
+            bridge_input.session_label = "PAIRING";
+            break;
+        case cosmic::viewer::ViewerState::Connecting:
+            bridge_input.session_label = "CONNECTING";
+            break;
+        case cosmic::viewer::ViewerState::Streaming: {
+            // U5: "SESSION · STREAMING · <NICKNAME>" when the connected host
+            // has a nickname (nicknames are stored uppercase).
+            std::string label = "STREAMING";
+            if (!connecting_address.empty()) {
+                for (const cosmic::SavedHost& host : bridge_input.hosts) {
+                    if (host.address == connecting_address &&
+                        !host.nickname.empty()) {
+                        label += " · " + host.nickname;
+                        break;
+                    }
+                }
+            }
+            bridge_input.session_label = label;
+            break;
+        }
+        }
+        bridge_input.session_busy = g_session->busy();
+        bridge_input.connected_or_connecting =
+            session_status.state == cosmic::viewer::ViewerState::Streaming ||
+            session_status.state == cosmic::viewer::ViewerState::Connecting;
+        bridge_input.connecting_address = connecting_address;
+        // Pairing feedback (U4): the in-scene PIN panel and the Pair modal's
+        // pairing state come from the pair latch, exactly as before. The
+        // auto-pair PIN on the Connect path is produced by the session worker
+        // itself (ViewerState PairingNeedPin/PairingInProgress with
+        // session_status.pin) WITHOUT the latch, so feed the bridge's pairing
+        // fields from BOTH sources.
+        const bool auto_pair_pin =
+            (session_status.state == cosmic::viewer::ViewerState::PairingNeedPin ||
+             session_status.state == cosmic::viewer::ViewerState::PairingInProgress) &&
+            !session_status.pin.empty() && !pair_in_flight;
+        bridge_input.pairing_active =
+            (pair_in_flight && pairing.active) || auto_pair_pin;
+        bridge_input.pairing_show_pin =
+            (pair_in_flight && pairing.show_pin) || auto_pair_pin;
+        bridge_input.pairing_pin =
+            auto_pair_pin ? session_status.pin : pairing.pin;
+        // Only the explicit latch path has a sticky error.
+        bridge_input.pairing_error = pair_error;
+        // Unhidden from the tray this frame: replay the monitor logo splash.
+        if (replay_boot_splash) {
+            bridge_state.boot_start_s = -1.0;
+            replay_boot_splash = false;
+        }
+        const cosmic::ui::bridge::BridgeDrawResult bridge_result =
+            cosmic::ui::bridge::draw_bridge(bridge_input, &bridge_state);
 
         if (show_pin_dialog) {
             cosmic::ui::draw_pin_dialog(g_pending_client, show_pin_dialog, pin_result_ok);
@@ -829,53 +919,107 @@ int main(int argc, char** argv) {
             // server-side and the client is paired.
         }
 
-        // Called every frame, not just while open: draw_settings_window
-        // early-returns when the window is closed and saves pending edits on
-        // that transition (plan M4.4).
-        cosmic::ui::draw_settings_window(settings, show_settings);
-
         ImGui::Render();
-        SDL_SetRenderDrawColor(renderer, 26, 28, 55, 255);  // #1a1c37 main_bg
+        // Clear to the design's deep indigo (#101226) and draw the parallax
+        // scene underneath the ImGui UI (docs/UI_MIGRATION.md U0). The scene
+        // draws in renderer-output pixels; out_w/out_h are in the same space
+        // the ImGui viewport uses (per-monitor-v2 DPI awareness).
+        const SDL_Color clear_color = cosmic::ui::SdlColor(cosmic::ui::kBg);
+        SDL_SetRenderDrawColor(renderer, clear_color.r, clear_color.g,
+                               clear_color.b, clear_color.a);
         SDL_RenderClear(renderer);
+        int out_w = 0;
+        int out_h = 0;
+        SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
+        if (out_w > 0 && out_h > 0) {
+            cosmic::ui::scene::SceneInput scene_input;
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            scene_input.mouse_x = mouse.x;
+            scene_input.mouse_y = mouse.y;
+            scene_input.time_s = static_cast<float>(SDL_GetTicks64()) / 1000.0f;
+            scene_input.motion = 1.0f;
+            scene_input.screen_logo_alpha = bridge_result.screen_logo_alpha;
+            cosmic::ui::scene::draw(renderer, out_w, out_h, scene_input);
+        }
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
 
-        // Apply host-list actions after the frame: the main-window branch falls
-        // off the end of the loop body, so this runs only for MainWindow mode.
-        // g_session->busy() was read mid-frame and can flip immediately after;
-        // worst case a button is enabled for one frame whose call then no-ops.
-        // Benign.
-        if (host_list_action.kind == cosmic::ui::HostListAction::Connect) {
-            g_session->start_connect(host_list_action.address,
-                                     settings.port_for(host_list_action.address));
-        } else if (host_list_action.kind == cosmic::ui::HostListAction::StartPair) {
-            // Nothing is persisted here — see pair_port above. The chosen port
-            // has to reach start_pair() before the entry exists, so resolve it
-            // directly: the override if set, else the global base.
+        // Apply Bridge actions after the frame (docs/UI_MIGRATION.md U3): the
+        // main-window branch falls off the end of the loop body, so this runs
+        // only for MainWindow mode. g_session->busy() was read mid-frame and
+        // can flip immediately after; worst case a button is enabled for one
+        // frame whose call then no-ops. Benign.
+        if (bridge_result.action.kind == cosmic::ui::bridge::BridgeAction::Connect) {
+            connecting_address = bridge_result.action.address;
+            // U5: warp out to the stream — the sky zooms/fades and the cards
+            // exit while the session connects; Viewing starts once the warp
+            // reaches 0.95.
+            cosmic::ui::scene::set_warp_target(1.0f);
+            cosmic::ui::scene::trigger_warp_flash();
+            g_session->start_connect(bridge_result.action.address,
+                                     settings.port_for(bridge_result.action.address));
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::StartPair) {
+            // Same latch discipline as the Pair modal: nothing is persisted
+            // until the handshake succeeds (see pair_port above).
             pair_in_flight = true;
-            pair_address = host_list_action.address;
-            pair_port = host_list_action.port;
-            pair_nickname = host_list_action.nickname;
+            pair_address = bridge_result.action.address;
+            pair_port = bridge_result.action.port;
+            pair_nickname = bridge_result.action.nickname;
             pair_error.clear();
             g_session->start_pair(
-                host_list_action.address,
-                pair_port > 0 ? pair_port : settings.port_base);
-        } else if (host_list_action.kind == cosmic::ui::HostListAction::CancelPair) {
-            // The worker may stay parked in gs_pair for minutes; the modal keeps
-            // showing the "cancelling may take a moment" note until it exits.
+                bridge_result.action.address,
+                bridge_result.action.port > 0 ? bridge_result.action.port
+                                              : settings.port_base);
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::CancelPair) {
+            // The worker may stay parked in gs_pair for minutes; the modal
+            // keeps showing the handshake line until it exits.
             g_session->end_session();
-        } else if (host_list_action.kind == cosmic::ui::HostListAction::ClosePair) {
-            host_list_state.pair_modal_open = false;
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::ClosePair) {
+            bridge_state.pair_modal_open = false;
             pair_error.clear();  // Reopening the modal starts clean.
-        } else if (host_list_action.kind == cosmic::ui::HostListAction::Remove) {
-            settings.remove_host(host_list_action.address);
-            if (host_list_state.selected == host_list_action.address) {
-                host_list_state.selected.clear();
+        } else if (bridge_result.action.kind == cosmic::ui::bridge::BridgeAction::Edit) {
+            settings.set_host_nickname(bridge_result.action.address,
+                                       bridge_result.action.nickname);
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetResolution) {
+            settings.resolution_mode = bridge_result.action.resolution;
+            settings_dirty = true;
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetFps) {
+            // The panel already clamps to 10-240 in steps of 10.
+            settings.fps = bridge_result.action.value;
+            settings_dirty = true;
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetBitrate) {
+            settings.bitrate_kbps = bridge_result.action.value;
+            settings_dirty = true;
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetPortBase) {
+            settings.port_base = bridge_result.action.value;
+            settings_dirty = true;
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetAutostart) {
+            settings.autostart = bridge_result.action.on;
+            settings_dirty = true;
+            if (!cosmic::autostart::set_enabled(bridge_result.action.on)) {
+                std::fprintf(stderr, "Failed to update autostart (see log).\n");
             }
-        } else if (host_list_action.kind == cosmic::ui::HostListAction::Edit) {
-            settings.set_host_nickname(host_list_action.address,
-                                       host_list_action.nickname);
-            settings.set_host_port(host_list_action.address, host_list_action.port);
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::CloseSettings) {
+            bridge_state.settings_open = false;
+            // Settings edits save on the close transition (docs/UI_MIGRATION.md
+            // U4): save() is a full-file rewrite, so steppers/sliders must not
+            // hit disk per tick. The shutdown save below is the fallback.
+            if (settings_dirty) {
+                settings.save();
+                settings_dirty = false;
+            }
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::Disconnect) {
+            g_session->end_session();
         }
     }
 
@@ -895,9 +1039,13 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
     cosmic::viewer::vrenderer_deinit();
+    // Tear down the scene's layer textures before the renderer goes away.
+    cosmic::ui::scene::shutdown(renderer);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     cosmic::hostglue::stop();
+    // Stop the presence poller (U6) and join its worker before SDL_Quit.
+    cosmic::presence::stop();
     cosmic::single_instance::release();
     SDL_Quit();
 

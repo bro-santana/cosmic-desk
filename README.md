@@ -4,7 +4,7 @@
 
 A minimal remote desktop tool built on the **Moonlight protocol** and based on the **Sunshine** project.
 
-Cosmic Desk acts as both **client** and **server**, making it easier to use as a remote desktop app than other moonlight-based alternatives.
+Cosmic Desk acts as both **client** and **server**, making it easier to use as a remote desktop app than other moonlight-based alternatives. Its UI is the parallax space-launcher Bridge (see [`docs/UI_MIGRATION.md`](docs/UI_MIGRATION.md)).
 
 ## TODOs
 
@@ -74,6 +74,7 @@ branch.
 | Document | Contents |
 |---|---|
 | [`PLAN.md`](PLAN.md) | Architecture, design decisions, milestones, risks |
+| [`docs/UI_MIGRATION.md`](docs/UI_MIGRATION.md) | UI migration: Bridge launcher plan, decisions, milestones |
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Toolchain setup and troubleshooting |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Ports, pairing flow, and the Cosmic protocol extensions |
 | [`docs/VENDOR.md`](docs/VENDOR.md) | **Provenance of every piece of copied code** |
@@ -103,6 +104,8 @@ Modifications to vendored files are marked inline with `COSMIC MODIFICATION` com
 | [nvapi](https://github.com/NVIDIA/nvapi) | MIT | NVIDIA NVAPI headers used by the vendored `nvprefs` code |
 | [glad](https://github.com/Dav1dde/glad) | MIT | GL/EGL loader generator used by the Linux VAAPI build |
 | [inputtino](https://github.com/games-on-whales/inputtino) | MIT | Linux uinput input injection (host) |
+| [lunasvg](https://github.com/sammycage/lunasvg) | MIT | Runtime SVG rasterizer for the Bridge UI parallax layers |
+| [IBM Plex](https://github.com/IBM/plex) | SIL OFL 1.1 | UI fonts (Mono + Sans) bundled in `assets/fonts/` |
 | Sunshine DXGI HLSL capture shaders ([Sunshine](https://github.com/LizardByte/Sunshine)) | GPL-3.0 | Windows capture shaders in `assets/shaders/` |
 
 Because Cosmic Desk builds on GPL-3.0 code, **Cosmic Desk is licensed under GPL-3.0** —
