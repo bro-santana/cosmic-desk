@@ -25,6 +25,7 @@
 //         planets.svg      13      0   -32   1.02  1.0
 //         desk.svg         26      0   +10   1.03  1.0
 //         monitor.svg      26      0   +10   1.03  1.0
+//         monitor-bezel.svg 26     0   +10   1.03  1.0
 //         screen-logo.svg  26      0   +10   1.03  1.0   (boot fade)
 //         obj-g11.svg      26      0   +10   1.03  1.0
 //         obj-g18.svg      26      0   +10   1.03  1.0
@@ -47,6 +48,8 @@
 #pragma once
 #include <SDL.h>
 
+#include <string>
+
 namespace cosmic::ui::scene {
 
 // Per-frame inputs; main.cpp feeds these from SDL state each frame.
@@ -58,6 +61,14 @@ struct SceneInput {
     // Screen-logo overlay opacity (0..1). U2 drives 1 during boot, fading to 0
     // over the 1.4s after boot completes; U0 had it always-on.
     float screen_logo_alpha = 1.0f;
+    // Cached wallpaper image path for the Bridge's focused host (PLAN.md
+    // D10(e)); "" = no backdrop. main.cpp resolves this via
+    // wallcache::path_for() each frame; the scene decodes/caches it itself.
+    std::string backdrop_path;
+    // Focus weight for the backdrop, 0..1 (PLAN.md D10(e)): the Bridge's
+    // hovered/selected card weight, driving the backdrop's crossfade/scrim
+    // alpha (eased in draw(), so a raw 0/1 toggle still fades smoothly).
+    float backdrop_alpha = 0.0f;
 };
 
 // Loads nothing yet; prepares state. Call once after the renderer exists.

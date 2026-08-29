@@ -252,6 +252,71 @@ installs live under Program Files. On first elevated start the legacy
 per-profile folder (e.g. the SYSTEM profile's Roaming\CosmicDesk) is copied
 over once (hostglue `migrate_legacy_appdata`). README documents the location.
 
+### D10. Wallpaper sync: hash in `/serverinfo`, image over authenticated HTTPS, Bridge backdrop (W1–W4)
+
+The AnyDesk-style feature: the Bridge shows each saved host's actual desktop
+wallpaper as the scene backdrop when that host's card is focused, cached locally
+so it survives the host going offline.
+
+**(a) Advertise, don't push.** The host adds one element to the existing
+`/serverinfo` extension block (D3a) and bumps the version:
+
+```xml
+<CosmicVersion>2</CosmicVersion>
+<CosmicWallpaperHash>9f86d081884c7d65...</CosmicWallpaperHash>
+```
+
+The element is omitted when there is no wallpaper (solid color, no interactive
+session) or sharing is disabled. The client's existing ~10 s presence poll
+(U6, `src/app/presence.cpp`) already GETs `/serverinfo`; it stops discarding
+the body and extracts the hash. A changed hash triggers exactly one download —
+"from time to time" syncing with near-zero steady-state cost. A hash on the
+unauthenticated HTTP port leaks nothing meaningful; the image does, so:
+
+**(b) The image is served only on the authenticated HTTPS port** (47984, client
+certificate verified) via a new `GET /cosmic/wallpaper` resource registered next
+to `appasset` in `nvhttp.cpp` — same trust boundary as the stream itself. Bytes
+are served as-is (Windows' `TranscodedWallpaper` is already a composited JPEG;
+no host-side re-encode), capped at ~8 MB, `Content-Type` sniffed from magic
+bytes. Host-side opt-out: `share_wallpaper` in `cosmic.json` (default on).
+
+**(c) How the host reads the wallpaper (the "runs as SYSTEM" answer).** Primary:
+`SystemParametersInfo(SPI_GETDESKWALLPAPER)` — valid in both portable and
+service mode because the process runs in the interactive session (D7). Fallback:
+resolve the console session's user (`WTSGetActiveConsoleSessionId` →
+`WTSQuerySessionInformation` → SID → ProfileList registry) and read
+`<profile>\AppData\Roaming\Microsoft\Windows\Themes\TranscodedWallpaper` —
+SYSTEM can read any profile, no impersonation needed. Provider lives in
+`src/hostglue/wallpaper.{h,cpp}` (the `displays.cpp` pattern: header free of
+vendored includes), caches on (path, mtime), hashes with Sunshine's
+`crypto::hash`. Linux is a stub returning "none" in v1 (DE-specific; revisit
+with Wayland work). v1 serves the primary monitor's wallpaper only.
+
+**(d) Client download owns its own curl handle — libgamestream is NOT extended.**
+`third-party/libgamestream/http.c` is a single global `CURL*` shared by the
+session worker (pairing, applist, launch); a concurrent fetch from the presence
+thread would race it. Instead `src/app/wallcache.{h,cpp}` creates its own easy
+handle with the same TLS options (client cert/key from `config_dir()/client`,
+peer/host verify off — the Moonlight protocol's self-signed model), runs on the
+presence worker after each poll pass, one download in flight at a time. An
+unpaired host simply fails the TLS client-cert check and is skipped; a non-image
+response (the 401 XML body) is detected by content-type/magic and discarded.
+
+**(e) Cache and rendering.** Disk cache: `config_dir()/wallpapers/
+<sanitized-address>.<hash>.img` (hash-in-filename doubles as the sidecar; stale
+files for the address pruned on write, cache dropped on host Remove). The scene
+(`src/ui/bridge/scene.cpp`) decodes via a vendored `stb_image.h` (new
+`docs/VENDOR.md` row) into an SDL texture — viewport-independent, so no
+resize-rebuild — and draws it cover-scaled between the background gradient and
+the star layers, under a dark scrim, max alpha ~0.4, multiplied by (1 − warp).
+`draw_bridge` picks the focused card (hovered, else selected) and derives the
+backdrop weight from the card's eased hover scale, so the wallpaper literally
+fades in as the card does; ~250 ms crossfade on focus change. It is the Bridge
+backdrop only — the client OS wallpaper is never touched. The same decoded
+image also fills the in-scene monitor's screen panel, framed by
+`monitor-bezel.svg`, at full strength and unscrimmed, driven by the same
+focus source.
+
 ## 5. Repository layout
 
 ```
@@ -668,6 +733,84 @@ screen and can unlock; reboot → connect before login → the logon screen stre
 tray Quit stops the service; uninstall removes the service and all files; the
 portable zip still matches the old documented limitation; Linux builds unchanged.
 
+### W1 — Host: wallpaper provider + protocol surface (1–2 days)
+
+Design: D10 (a)–(c).
+
+1. `src/hostglue/wallpaper.{h,cpp}`: Windows provider — `SPI_GETDESKWALLPAPER`
+   primary, console-user `TranscodedWallpaper` fallback; (path, mtime)-keyed
+   cache; SHA-256 via Sunshine's `crypto::hash`; `current_hash()` +
+   `read_bytes()`; returns none with no interactive user session, on solid-color
+   desktops, or when disabled. Linux: stub returning none.
+2. `nvhttp.cpp` (COSMIC MODIFICATION): serverinfo gains
+   `root.CosmicWallpaperHash` when non-empty; `CosmicVersion` → 2; new
+   `^/cosmic/wallpaper$` GET on the **https_server only**, modeled on
+   `appasset` (content-type by magic bytes, 404 when none/disabled, ~8 MB cap).
+3. `share_wallpaper` (default on) added to `Settings` / `cosmic.json` and
+   plumbed to the provider at `hostglue::start` (and on settings change).
+
+**Accept:** `curl -k --cert client.pem --key key.pem
+https://host:47984/cosmic/wallpaper` from a paired client's key dir returns the
+host's wallpaper bytes; unpaired cert is rejected; plain HTTP port has no such
+route; serverinfo shows the hash, which changes when the wallpaper changes and
+disappears on a solid-color desktop or with `share_wallpaper` off; stock
+Moonlight clients still pair/stream (unknown-node tolerance, as D3a).
+
+### W2 — Client: hash tracking, authenticated download, disk cache (1 day)
+
+Design: D10 (a), (d), (e).
+
+1. `src/app/presence.cpp`: capture the `/serverinfo` body (today discarded) and
+   extract `<CosmicWallpaperHash>` with a plain string scan; `snapshot()` grows
+   to `address -> {reachable, wallpaper_hash}` (one consumer in `main.cpp`).
+2. `src/app/wallcache.{h,cpp}`: own curl handle with libgamestream's TLS
+   options; called from the presence worker after each pass; downloads when
+   advertised hash ≠ cached hash, one in flight; writes
+   `config_dir()/wallpapers/<addr>.<hash>.img`, prunes stale files;
+   `path_for(address)` for the UI thread; cache dropped on host Remove.
+
+**Accept:** with a paired host, the cache file appears within one poll pass
+(~10 s) and updates within one pass of changing the host wallpaper; an unpaired
+host produces no file and no error spam; a stock Sunshine host (no element)
+leaves presence behavior unchanged; killing the host mid-download does not
+corrupt the cache (write-temp-then-rename).
+
+### W3 — Bridge: backdrop rendering (1–2 days)
+
+Design: D10 (e).
+
+1. Vendor `stb_image.h` (`third-party/stb/`, public domain) + `docs/VENDOR.md`
+   row.
+2. `scene.cpp`: backdrop texture slot (decode once per path, no resize
+   rebuild), cover-scale crop, dark scrim, drawn between the background
+   gradient and the twinkle/star layers; alpha = weight × ~0.4 × (1 − warp_t);
+   ~250 ms crossfade on path change; small LRU (4) of decoded textures.
+   `SceneInput` gains `backdrop_path` + `backdrop_alpha`.
+3. `bridge.cpp`: `BridgeDrawResult` gains the focused address + weight (hovered
+   card first, else selected; weight from the card's eased hover scale,
+   × 0.25 while pairing — the existing chrome fade). `main.cpp` wires result →
+   `wallcache::path_for` → `SceneInput` (draw order already guarantees
+   `draw_bridge` runs before `scene::draw` in the same frame).
+
+**Accept:** hovering a cached host's card fades its wallpaper in behind the
+scene and out on leave; switching cards crossfades; Connect fades it with the
+warp; an offline-but-cached host still shows its wallpaper; a host with no
+cache changes nothing; cards/text remain readable over a bright white
+wallpaper (scrim check); resize does not re-decode.
+
+### W4 — Settings, docs, polish (0.5 day)
+
+1. `share_wallpaper` toggle in the Settings panel (`panels.cpp`, autostart-row
+   pattern) + `BridgeAction` + `main.cpp` apply.
+2. `docs/PROTOCOL.md`: "Cosmic extension: wallpaper" section (hash element,
+   endpoint, CosmicVersion 2, privacy note). README TODO list updated.
+3. Cross-version pass: v1 client ↔ v2 host and vice versa, both directions
+   ignore the unknown parts.
+
+**Accept:** toggle off on the host → hash disappears from serverinfo and the
+endpoint 404s within one poll; docs table lists the new route; the §9.2
+two-machine matrix passes with wallpapers showing in both directions.
+
 ## 9. Verification strategy
 
 1. **Interop bisection:** M1 = our host vs. stock moonlight-qt; M2 = our viewer vs.
@@ -712,3 +855,4 @@ portable zip still matches the old documented limitation; Linux builds unchanged
 | R13 | App crash → service respawn loop | Low | Low | Job-object kill-on-close prevents orphans; `sc failure` restart delay (60 s); rotated svc log stays bounded |
 | R14 | Fast user switching restarts the session mid-stream | Med | Low | Upstream behavior (WTS_CONSOLE_CONNECT); documented in README |
 | R15 | ProgramData vs user-profile config stores (mixing service and manual runs) | Med | Med | Single-instance guard (D8); `--shortcut` is the only supported launch with the service installed; one-time migration (D9); README documents the location |
+| R16 | Wallpaper sync leaks personal images (wallpapers are often photos) | Low | Med | Image served only on the client-cert-authenticated HTTPS port (D10b) — same trust boundary as the stream; host-side `share_wallpaper` opt-out; hash-only on the open HTTP port |

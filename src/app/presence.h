@@ -2,8 +2,9 @@
 //
 // A single background worker polls GET http://<address>:<port>/serverinfo for
 // every saved host every ~10 s (2 s timeout) so the Bridge cards can show the
-// design's LINK READY state. Results are cached in a mutex-protected map and
-// read from the main thread; the worker never touches ImGui/SDL.
+// design's LINK READY state. Results (reachability plus the host's advertised
+// wallpaper hash, if any) are cached in a mutex-protected map and read from
+// the main thread; the worker never touches ImGui/SDL.
 #pragma once
 #include <map>
 #include <mutex>
@@ -20,7 +21,14 @@ void start(const std::vector<std::pair<std::string, int>>& hosts);
 // Stops the worker and joins it. Safe to call even if never started.
 void stop();
 
-// Thread-safe snapshot: address -> reachable.
-std::map<std::string, bool> snapshot();
+// Per-host result of the most recent /serverinfo poll.
+struct HostPresence {
+    bool reachable = false;
+    std::string wallpaper_hash;  // "" when the host advertises none
+};
+
+// Thread-safe snapshot: address -> presence. wallpaper_hash reflects only the
+// most recent poll: a failed poll yields {false, ""}.
+std::map<std::string, HostPresence> snapshot();
 
 }  // namespace cosmic::presence

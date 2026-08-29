@@ -43,6 +43,11 @@
 // extension (M5.1). Same pattern as pin_bridge.h: declared in the app's src/
 // tree, implemented in displays.cpp in the cosmicdesk target.
 #include "hostglue/displays.h"
+// COSMIC MODIFICATION: wallpaper hash/bytes provider for the /serverinfo
+// extension and the /cosmic/wallpaper route (D10a/b). Same pattern as
+// displays.h: declared in the app's src/ tree, implemented in wallpaper.cpp
+// in the cosmicdesk target.
+#include "hostglue/wallpaper.h"
 
 using namespace std::literals;
 
@@ -722,8 +727,9 @@ namespace nvhttp {
     // COSMIC MODIFICATION: Cosmic Desk display extension (PLAN D3a, docs/PROTOCOL.md).
     // Stock Moonlight clients ignore unknown nodes. Ordering contract (D3c): these
     // entries are in platf::display_names() order, the same order consumed by
-    // apply_shortcut()'s Ctrl+Alt+Shift+F(1+i) handler in input.cpp.
-    tree.put("root.CosmicVersion", 1);
+    // apply_shortcut()'s Ctrl+Alt+Shift+F(1+i) handler in input.cpp. Version 2
+    // adds CosmicWallpaperHash (PLAN D10a/b, milestone W1 item 2).
+    tree.put("root.CosmicVersion", 2);
     pt::ptree displays_tree;
     int index = 0;
     for (const auto &display : cosmic::displays::list_displays()) {
@@ -739,6 +745,18 @@ namespace nvhttp {
       ++index;
     }
     tree.add_child("root.CosmicDisplays", displays_tree);
+
+    // COSMIC MODIFICATION: advertise the current wallpaper's content hash so a
+    // client can skip re-fetching an unchanged image via GET /cosmic/wallpaper
+    // (PLAN D10a/b). The hash itself leaks nothing; the image does, so it is
+    // fetched separately over the client-certificate-verified HTTPS server.
+    // The element is omitted entirely -- not emitted empty -- when there is no
+    // wallpaper to share or wallpaper sharing is disabled; clients must treat
+    // an absent CosmicWallpaperHash as "nothing to fetch".
+    auto wallpaper_hash = cosmic::wallpaper::current_hash();
+    if (!wallpaper_hash.empty()) {
+      tree.put("root.CosmicWallpaperHash", wallpaper_hash);
+    }
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
@@ -1091,6 +1109,55 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  // COSMIC MODIFICATION: serve the host's desktop wallpaper (PLAN D10a/b,
+  // milestone W1 item 2). This route only exists on this, the
+  // client-certificate-verified HTTPS server -- never on http_server -- which
+  // is the trust boundary that makes handing out the image acceptable at all.
+  // The 8 MB size cap on the bytes is enforced inside
+  // cosmic::wallpaper::read_bytes() itself, not here.
+  void cosmic_wallpaper(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto bytes = cosmic::wallpaper::read_bytes();
+
+    // Sniff the format from magic bytes rather than trusting a file
+    // extension; read_bytes() only ever hands back the raw file. Anything
+    // that doesn't match a known signature -- including "" for "no
+    // wallpaper" or "sharing disabled" -- is never served.
+    // COSMIC MODIFICATION: this signature list is duplicated in the provider
+    // gate in src/hostglue/wallpaper.cpp (it only reports a hash/bytes for a
+    // file matching one of these three signatures, so /serverinfo never
+    // advertises a wallpaper this route cannot serve). Any change here must
+    // update both call sites together.
+    std::string_view content_type;
+    if (bytes.size() >= 3 && (unsigned char) bytes[0] == 0xFF && (unsigned char) bytes[1] == 0xD8 && (unsigned char) bytes[2] == 0xFF) {
+      content_type = "image/jpeg";
+    } else if (bytes.size() >= 4 && (unsigned char) bytes[0] == 0x89 && (unsigned char) bytes[1] == 0x50 && (unsigned char) bytes[2] == 0x4E && (unsigned char) bytes[3] == 0x47) {
+      content_type = "image/png";
+    } else if (bytes.size() >= 2 && (unsigned char) bytes[0] == 0x42 && (unsigned char) bytes[1] == 0x4D) {
+      content_type = "image/bmp";
+    } else {
+      // COSMIC MODIFICATION: not_found<SunshineHTTPS> is not used here -- it
+      // calls response->write(data.str()), which resolves to the
+      // string_view overload and emits an "HTTP/1.1 200 OK" status line with
+      // Content-Length covering only its XML body; the 404-looking text it
+      // writes afterward lands past Content-Length and is discarded. That is
+      // fine for XML-consuming callers but wrong for a binary route, so this
+      // route sends a real 404 status line instead.
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", content_type);
+    // string_view overload writes the content-length header from bytes.size()
+    // and streams exactly that many bytes, so embedded NUL bytes in the image
+    // are not truncated (unlike a C-string based write).
+    response->write(SimpleWeb::StatusCode::success_ok, bytes, headers);
+    response->close_connection_after_response = true;
+  }
+
   void setup(const std::string &pkey, const std::string &cert) {
     conf_intern.pkey = pkey;
     conf_intern.servercert = cert;
@@ -1200,6 +1267,8 @@ namespace nvhttp {
     };
     https_server.resource["^/applist$"]["GET"] = applist;
     https_server.resource["^/appasset$"]["GET"] = appasset;
+    // COSMIC MODIFICATION: wallpaper route, HTTPS only (PLAN D10a/b).
+    https_server.resource["^/cosmic/wallpaper$"]["GET"] = cosmic_wallpaper;
     https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
       launch(host_audio, resp, req);
     };

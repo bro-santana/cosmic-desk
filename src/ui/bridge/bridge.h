@@ -34,6 +34,12 @@ struct BridgeState {
     // replays.
     double boot_start_s = -1.0;
     std::string selected;             // address of the selected card
+    // PLAN.md D10(e): set when the app leaves Viewing (main.cpp's
+    // Viewing-exit transition, and the close-to-tray path that ends the
+    // session) so the card that is still selected (from the click that
+    // launched the stream) stops feeding the steady backdrop weight;
+    // cleared by the next explicit card click.
+    bool backdrop_selection_muted = false;
     std::string renaming;             // address being renamed inline ("" = none)
     char rename_buf[48] = {};         // inline rename buffer
     bool settings_open = false;       // U4: the Settings panel is open
@@ -87,6 +93,7 @@ struct BridgeInput {
     int fps = 60;
     int bitrate_kbps = 20000;
     bool autostart = false;
+    bool share_wallpaper = true;  // settings.share_wallpaper: host-side opt-out (PLAN.md D10)
     // True when cosmicsvc spawned us (main.cpp --service). The service already
     // starts the host at boot, and autostart.cpp's HKCU Run key would land in
     // the SYSTEM profile's hive rather than the logged-on user's, so the
@@ -113,6 +120,7 @@ struct BridgeAction {
         SetBitrate,
         SetPortBase,
         SetAutostart,
+        SetShareWallpaper,
         CloseSettings,
         StartPair,   // address + nickname + port (0 = follow port_base)
         CancelPair,  // stop an in-flight handshake; the modal stays open
@@ -123,12 +131,18 @@ struct BridgeAction {
     cosmic::ResolutionMode resolution = cosmic::ResolutionMode::HostNative;  // SetResolution
     int value = 0;         // SetFps / SetBitrate / SetPortBase
     int port = 0;          // StartPair: 0 = follow port_base
-    bool on = false;       // SetAutostart
+    bool on = false;       // SetAutostart / SetShareWallpaper
 };
 
 struct BridgeDrawResult {
     BridgeAction action;
     float screen_logo_alpha = 1.0f;   // as in U2
+    // PLAN.md D10(e): the scene backdrop is the focused host's cached desktop
+    // wallpaper. Address of the focused host, or "" for no backdrop.
+    std::string backdrop_address;
+    // PLAN.md D10(e): backdrop strength, 0..1, derived from the focused
+    // card's eased hover scale so the wallpaper fades in as the card does.
+    float backdrop_weight = 0.0f;
 };
 
 // Draws the fullscreen Bridge window and its in-scene monitor UI. Call once

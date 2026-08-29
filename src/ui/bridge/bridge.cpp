@@ -551,6 +551,8 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     if (hovered && !widget_hovered) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             state->selected = host.address;
+            // PLAN.md D10(e): a fresh click re-arms the selected-card backdrop.
+            state->backdrop_selection_muted = false;
         }
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && host.paired &&
             !in.session_busy) {
@@ -923,6 +925,12 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     const cosmic::ui::scene::CursorSmooth cursor = cosmic::ui::scene::smoothed_cursor();
     const int64_t now_unix = static_cast<int64_t>(std::time(nullptr));
 
+    // PLAN.md D10(e): the scene backdrop is the focused host's cached
+    // wallpaper. "" / 0 = no backdrop; filled below when a card is hovered
+    // (or, absent that, the selected card) and left untouched otherwise.
+    std::string backdrop_address;
+    float backdrop_weight = 0.0f;
+
     if (in.hosts.empty()) {
         // Empty state: a single beacon card at 8%/30% when there are no hosts.
         result.action = DrawEmptyCard(in, state, vp_size, scale);
@@ -1016,6 +1024,16 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
                 ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
             cur += ((hovered ? 1.08f : 1.0f) - cur) * k;
             const float scale_factor = cur;
+            // PLAN.md D10(e): the first hovered card this frame wins the
+            // backdrop; its weight ramps in with the card's own hover scale
+            // (cur eases toward 1.08 above). On unhover this branch is
+            // skipped and the weight steps to the fallback instead of
+            // decaying — the scene eases backdrop_alpha itself (~250ms, W3
+            // item 2), so the step is not visible.
+            if (hovered && backdrop_address.empty()) {
+                backdrop_address = host.address;
+                backdrop_weight = std::clamp((cur - 1.0f) / 0.08f, 0.0f, 1.0f);
+            }
 
             // Depth-of-field far-card fade (polish pass 2): cards far from the
             // cursor dim toward the design's brightness falloff. Blur itself is
@@ -1032,6 +1050,21 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
             ImGui::PopStyleVar();
             if (result.action.kind == BridgeAction::None) {
                 result.action = card_action;
+            }
+        }
+
+        // PLAN.md D10(e): no card hovered this frame — fall back to the
+        // selected card (if it still names a known host) at a steady weight,
+        // unless a just-ended stream muted it (the click that launched the
+        // stream must not leave the backdrop on forever).
+        if (backdrop_address.empty() && !state->selected.empty() &&
+            !state->backdrop_selection_muted) {
+            for (const SavedHost& host : in.hosts) {
+                if (host.address == state->selected) {
+                    backdrop_address = state->selected;
+                    backdrop_weight = 0.6f;
+                    break;
+                }
             }
         }
     }
@@ -1086,6 +1119,11 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
             std::clamp((kLogoHoldS + kLogoFadeS - t) / kLogoFadeS, 0.0, 1.0));
     }
     result.screen_logo_alpha = screen_logo_alpha;
+
+    // PLAN.md D10(e): the backdrop fades with the rest of the chrome while
+    // pairing (see the 0.25 fade above); the address itself is unaffected.
+    result.backdrop_address = std::move(backdrop_address);
+    result.backdrop_weight = pairing ? backdrop_weight * 0.25f : backdrop_weight;
     return result;
 }
 

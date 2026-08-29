@@ -3,7 +3,7 @@
    viewBox="0 0 1620.8481 1200"
    version="1.1"
    id="svg1"
-   sodipodi:docname="monitor.svg"
+   sodipodi:docname="monitor-bezel.svg"
    inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
@@ -20,8 +20,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="1.0052701"
-     inkscape:cx="765.96327"
-     inkscape:cy="630.17887"
+     inkscape:cx="765.9633"
+     inkscape:cy="630.17889"
      inkscape:window-width="1920"
      inkscape:window-height="1055"
      inkscape:window-x="-7"
@@ -420,11 +420,15 @@
     <clipPath
        clipPathUnits="userSpaceOnUse"
        id="clipPath2">
-      <use
-         x="0"
-         y="0"
-         xlink:href="#rect9"
-         id="use3" />
+      <rect
+         style="fill:#cbddf5;fill-opacity:1;stroke-width:1.1"
+         id="use3"
+         width="509.02075"
+         height="381.69714"
+         x="1739.0857"
+         y="267.76184"
+         rx="22.4"
+         inkscape:label="Monitor" />
     </clipPath>
     <linearGradient
        xlink:href="#linearGradient3"
@@ -435,60 +439,9 @@
        y2="399.09958"
        gradientUnits="userSpaceOnUse" />
   </defs>
-  <g
-     id="g9"
-     transform="translate(-1132.1962,66.320914)"
-     style="display:inline;opacity:1;mix-blend-mode:normal"
-     inkscape:label="Monitor">
-    <ellipse
-       style="display:inline;opacity:1;fill:#1c2043;fill-opacity:1;stroke-width:1.11077"
-       id="path30"
-       ry="6"
-       rx="240.13556"
-       cy="717.67908"
-       cx="1982.0901"
-       inkscape:label="DropShadow" />
-    <path
-       id="path10"
-       style="display:inline;fill:#cbdbf4;fill-opacity:1;stroke-width:1.1"
-       d="m 1940.8887,649.45898 c 0,0 -6.5691,42.39007 -9.8535,46.44727 -3.2844,4.05721 -10.8189,9.27371 -18.5469,11.97852 -7.728,2.7048 -12.5583,6.37627 -12.1719,7.92187 0.3864,1.54561 1.1592,2.31836 2.3184,2.31836 h 86.9609 7.5156 86.959 c 1.1592,0 1.932,-0.77275 2.3184,-2.31836 0.3864,-1.5456 -4.4419,-5.21707 -12.1699,-7.92187 -7.7281,-2.70481 -15.2645,-7.92131 -18.5489,-11.97852 -3.2844,-4.0572 -9.8535,-46.44727 -9.8535,-46.44727 h -48.7051 -7.5156 z"
-       inkscape:label="Stand" />
-    <path
-       id="use17"
-       style="display:inline;opacity:1;fill:#303263;fill-opacity:1;stroke-width:1.1"
-       d="m 1940.8881,649.45835 c 0,0 -0.9195,5.94319 -2.2442,13.5918 h 109.418 c -1.3247,-7.64861 -2.2461,-13.5918 -2.2461,-13.5918 z"
-       inkscape:label="MidShadow" />
-    <rect
-       style="fill:#cbddf5;fill-opacity:1;stroke-width:1.1"
-       id="rect9"
-       width="509.02075"
-       height="381.69714"
-       x="1739.0857"
-       y="267.76184"
-       rx="22.4"
-       inkscape:label="Monitor" />
-    <ellipse
-       style="display:inline;fill:#5b6f91;fill-opacity:1;stroke-width:1.1"
-       id="path9"
-       cx="1993.5364"
-       cy="622.49103"
-       rx="12.075013"
-       ry="12.171613"
-       inkscape:label="Button" />
-    <rect
-       style="display:inline;opacity:1;mix-blend-mode:normal;fill:#303263;fill-opacity:1;stroke-width:1.1"
-       id="rect15"
-       width="462.98959"
-       height="283.96115"
-       x="1754.7095"
-       y="294.88641"
-       transform="translate(7.392,-6.320942)"
-       inkscape:label="PanelOff" />
-    <path
-       id="rect14"
-       style="display:inline;opacity:1;fill:#1a1b39;fill-opacity:1;stroke-width:1.1"
-       d="m 1754.0757,274.08206 c -12.4012,0.01 -22.3828,9.99687 -22.3828,22.40039 v 303.16797 h 509.0215 V 296.48245 c 0,-12.40352 -9.9816,-22.39062 -22.3828,-22.40039 z m 0.6328,20.80469 h 462.9903 v 283.96093 h -462.9903 z"
-       transform="translate(7.391966,-6.320942)"
-       inkscape:label="Bezel" />
-  </g>
+  <path
+     id="rect14"
+     style="display:inline;mix-blend-mode:normal;fill:#1a1b39;fill-opacity:1;stroke-width:1.1"
+     d="m 629.2715,334.08203 c -12.4012,0.01 -22.3828,9.99687 -22.3828,22.40039 v 303.16797 h 509.0215 V 356.48242 c 0,-12.40352 -9.9816,-22.39062 -22.3828,-22.40039 z m 0.6328,20.80469 h 462.9903 V 638.84765 H 629.9043 Z"
+     inkscape:label="Bezel" />
 </svg>

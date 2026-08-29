@@ -6,6 +6,8 @@ A minimal remote desktop tool built on the **Moonlight protocol** and based on t
 
 Cosmic Desk acts as both **client** and **server**, making it easier to use as a remote desktop app than other moonlight-based alternatives. Its UI is the parallax space-launcher Bridge (see [`docs/UI_MIGRATION.md`](docs/UI_MIGRATION.md)).
 
+The Bridge shows the focused host's desktop wallpaper behind the scene, cached locally so it still appears when that host is offline. Each machine chooses whether to share its own wallpaper (Settings, "Share wallpaper"); see [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the protocol.
+
 ## TODOs
 
 File transfer, clipboard sync, gamepads.

@@ -10,8 +10,10 @@
 #include "app/service_ctrl.h"
 #include "app/single_instance.h"
 #include "app/state.h"
+#include "app/wallcache.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
+#include "hostglue/wallpaper.h"
 #include "ui/bridge/bridge.h"
 #include "ui/bridge/design.h"
 #include "ui/bridge/scene.h"
@@ -480,6 +482,17 @@ int main(int argc, char** argv) {
     // (pair success adds a host; Edit/Remove change entries) so the worker's
     // poll set stays in sync without a per-frame call.
     std::vector<std::pair<std::string, int>> last_poll_hosts;
+    // Backdrop memo (PLAN.md D10(e)): wallcache::path_for takes a mutex shared
+    // with the presence worker and scans the cache directory on a miss, so it
+    // must not run every frame. Cached here and only re-queried when the
+    // focused address or its advertised hash changes (see the SceneInput fill
+    // below).
+    struct BackdropMemo {
+        std::string address;                // last address queried ("" = none)
+        std::string hash;                   // that address's wallpaper hash at query time
+        std::filesystem::path path;         // wallcache::path_for result
+        uint64_t last_query_ms = 0;         // SDL_GetTicks64() at the last query
+    } backdrop_memo;
     // Settings edits save on the Settings panel's close transition, not per
     // tick (docs/UI_MIGRATION.md U4); the shutdown save() is the fallback.
     bool settings_dirty = false;
@@ -570,6 +583,11 @@ int main(int argc, char** argv) {
                         leave_viewing_ui(window, &input_grabbed,
                                          &vrenderer_active);
                         g_session->end_session();
+                        // PLAN.md D10(e): second stream-end seam (hide to
+                        // tray mid-stream) alongside the Viewing-exit
+                        // transition below — stop the steady selected-card
+                        // backdrop weight so it does not come back on Show.
+                        bridge_state.backdrop_selection_muted = true;
                     }
                     mode = cosmic::AppMode::HiddenToTray;
                     SDL_HideWindow(window);
@@ -710,6 +728,9 @@ int main(int argc, char** argv) {
             // U5: warp back to the Bridge — the scene reassembles while the
             // bridge shows.
             cosmic::ui::scene::set_warp_target(0.0f);
+            // PLAN.md D10(e): stop the steady selected-card backdrop weight
+            // now that the stream has ended, so it fades out with the scene.
+            bridge_state.backdrop_selection_muted = true;
         }
 
         if (mode == cosmic::AppMode::HiddenToTray) {
@@ -852,6 +873,7 @@ int main(int argc, char** argv) {
         bridge_input.fps = settings.fps;
         bridge_input.bitrate_kbps = settings.bitrate_kbps;
         bridge_input.autostart = settings.autostart;
+        bridge_input.share_wallpaper = settings.share_wallpaper;
         bridge_input.service_mode = service_mode;
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
         bridge_input.time_s = static_cast<double>(SDL_GetTicks64()) / 1000.0;
@@ -872,7 +894,13 @@ int main(int argc, char** argv) {
                 last_poll_hosts = std::move(poll_hosts);
             }
         }
-        bridge_input.presence = cosmic::presence::snapshot();
+        // The Bridge only needs reachability today; the wallpaper hash in the
+        // snapshot feeds the backdrop memo in the SceneInput fill below.
+        const std::map<std::string, cosmic::presence::HostPresence> presence_snapshot =
+            cosmic::presence::snapshot();
+        for (const auto& [address, presence] : presence_snapshot) {
+            bridge_input.presence[address] = presence.reachable;
+        }
         bridge_input.warp = cosmic::ui::scene::warp_progress();
         switch (session_status.state) {
         case cosmic::viewer::ViewerState::Idle:
@@ -960,6 +988,31 @@ int main(int argc, char** argv) {
             scene_input.time_s = static_cast<float>(SDL_GetTicks64()) / 1000.0f;
             scene_input.motion = 1.0f;
             scene_input.screen_logo_alpha = bridge_result.screen_logo_alpha;
+            // PLAN.md D10(e): resolve the focused host's cached wallpaper into
+            // the scene backdrop. path_for is memoized (backdrop_memo) to keep
+            // it off the per-frame path, and refreshed at 1 Hz because the
+            // advertised hash changes one poll pass BEFORE wallcache::sync
+            // finishes downloading the new file — so both "no file yet" and
+            // "still the previous file" resolve themselves within a second.
+            scene_input.backdrop_alpha = bridge_result.backdrop_weight;
+            if (!bridge_result.backdrop_address.empty()) {
+                std::string hash;
+                const auto presence_it = presence_snapshot.find(bridge_result.backdrop_address);
+                if (presence_it != presence_snapshot.end()) {
+                    hash = presence_it->second.wallpaper_hash;
+                }
+                const uint64_t now_ms = SDL_GetTicks64();
+                const bool stale =
+                    now_ms - backdrop_memo.last_query_ms >= 1000;
+                if (bridge_result.backdrop_address != backdrop_memo.address ||
+                    hash != backdrop_memo.hash || stale) {
+                    backdrop_memo.address = bridge_result.backdrop_address;
+                    backdrop_memo.hash = hash;
+                    backdrop_memo.path = cosmic::wallcache::path_for(backdrop_memo.address);
+                    backdrop_memo.last_query_ms = now_ms;
+                }
+                scene_input.backdrop_path = backdrop_memo.path.string();
+            }
             cosmic::ui::scene::draw(renderer, out_w, out_h, scene_input);
         }
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
@@ -1028,6 +1081,14 @@ int main(int argc, char** argv) {
             if (!cosmic::autostart::set_enabled(bridge_result.action.on)) {
                 std::fprintf(stderr, "Failed to update autostart (see log).\n");
             }
+        } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetShareWallpaper) {
+            settings.share_wallpaper = bridge_result.action.on;
+            settings_dirty = true;
+            // Apply immediately so the running host's /serverinfo and
+            // /cosmic/wallpaper handlers honor the change without a restart
+            // (PLAN.md D10 / W1.3's "on settings change" seam).
+            cosmic::wallpaper::set_enabled(bridge_result.action.on);
         } else if (bridge_result.action.kind ==
                    cosmic::ui::bridge::BridgeAction::CloseSettings) {
             bridge_state.settings_open = false;
