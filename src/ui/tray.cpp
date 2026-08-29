@@ -39,6 +39,12 @@ void on_quit_clicked(tray_menu*) {
     }
 }
 
+void on_tray_double_clicked(tray*) {
+    if (g_callbacks.on_show) {
+        g_callbacks.on_show();
+    }
+}
+
 }  // namespace
 
 bool tray_start(const std::string& icon_path, TrayCallbacks callbacks) {
@@ -56,6 +62,7 @@ bool tray_start(const std::string& icon_path, TrayCallbacks callbacks) {
 
     g_tray.icon = g_icon_path.data();
     g_tray.menu = g_menu;
+    g_tray.click_cb = on_tray_double_clicked;
 
     if (tray_init(&g_tray) != 0) {
         return false;

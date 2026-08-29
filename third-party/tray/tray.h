@@ -6,6 +6,13 @@ struct tray_menu;
 struct tray {
   char *icon;
   struct tray_menu *menu;
+
+  /* COSMIC MODIFICATION: optional left-double-click action, distinct from
+     the context menu. Only honored by the WinAPI backend; other backends
+     leave it unused since their platform toolkits don't distinguish clicks
+     from double-clicks on the tray icon (e.g. AppIndicator always opens the
+     menu on any click). NULL means double-click does nothing. */
+  void (*click_cb)(struct tray *);
 };
 
 struct tray_menu {
@@ -223,6 +230,9 @@ static WNDCLASSEX wc;
 static NOTIFYICONDATA nid;
 static HWND hwnd;
 static HMENU hmenu = NULL;
+/* COSMIC MODIFICATION: remembered so WM_LBUTTONDBLCLK can invoke the
+   double-click action. */
+static struct tray *_tray_self = NULL;
 
 static LRESULT CALLBACK _tray_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                        LPARAM lparam) {
@@ -234,7 +244,11 @@ static LRESULT CALLBACK _tray_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam,
     PostQuitMessage(0);
     return 0;
   case WM_TRAY_CALLBACK_MESSAGE:
-    if (lparam == WM_LBUTTONUP || lparam == WM_RBUTTONUP) {
+    /* COSMIC MODIFICATION: right-click still pops the context menu; a
+       single left-click no longer does (it did nothing distinguishable
+       from double-click before), and left-double-click runs the dedicated
+       click action (e.g. show the window) instead. */
+    if (lparam == WM_RBUTTONUP) {
       POINT p;
       GetCursorPos(&p);
       SetForegroundWindow(hwnd);
@@ -242,6 +256,12 @@ static LRESULT CALLBACK _tray_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                            TPM_RETURNCMD | TPM_NONOTIFY,
                                 p.x, p.y, 0, hwnd, NULL);
       SendMessage(hwnd, WM_COMMAND, cmd, 0);
+      return 0;
+    }
+    if (lparam == WM_LBUTTONDBLCLK) {
+      if (_tray_self != NULL && _tray_self->click_cb != NULL) {
+        _tray_self->click_cb(_tray_self);
+      }
       return 0;
     }
     break;
@@ -296,6 +316,7 @@ static HMENU _tray_menu(struct tray_menu *m, UINT *id) {
 }
 
 static int tray_init(struct tray *tray) {
+  _tray_self = tray;
   memset(&wc, 0, sizeof(wc));
   wc.cbSize = sizeof(WNDCLASSEX);
   wc.lpfnWndProc = _tray_wnd_proc;
