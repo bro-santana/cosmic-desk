@@ -59,6 +59,15 @@ struct BridgeState {
     // Seconds (time_s of the input) when the pairing PIN first became visible;
     // -1 = PIN not showing. Anchors the PIN panel's slide-up and scan cycle.
     double pin_shown_at_s = -1.0;
+    // Delete-confirmation modal (handoff README §4). Address of the host
+    // awaiting confirmation ("" = closed), and the ImGui frame it opened on.
+    // A state field rather than a BridgeAction because the click that opens it
+    // also commits an in-progress rename (which emits Edit) in the same frame.
+    // The frame stamp exists because the trash button opens the modal on the
+    // mouse PRESS: without it the modal's own scrim would see that same press
+    // on its first frame and close immediately.
+    std::string delete_modal_address;
+    int delete_modal_frame = -1;
     // Inline stepper editing (Settings panel): id of the stepper whose value
     // is being typed directly ("" = none, else "fps"/"port"), and the digits
     // buffer. Entered by clicking the value between the -/+ buttons; committed
@@ -114,6 +123,7 @@ struct BridgeAction {
         None,
         Connect,
         Edit,
+        Remove,  // address: forget the host locally
         Disconnect,
         SetResolution,
         SetFps,
@@ -126,7 +136,7 @@ struct BridgeAction {
         CancelPair,  // stop an in-flight handshake; the modal stays open
         ClosePair,   // dismiss the Pair modal and clear its sticky error
     } kind = None;
-    std::string address;   // Connect / StartPair / Edit target
+    std::string address;   // Connect / StartPair / Edit / Remove target
     std::string nickname;  // StartPair / Edit (Edit is already uppercased)
     cosmic::ResolutionMode resolution = cosmic::ResolutionMode::HostNative;  // SetResolution
     int value = 0;         // SetFps / SetBitrate / SetPortBase

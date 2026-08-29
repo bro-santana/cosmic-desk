@@ -70,6 +70,7 @@ constexpr int kBitrateMbpsMax = 150;
 // --- U4: Pair modal + PIN panel (design px; handoff README "Pair modal") ---
 
 constexpr float kPairModalW = 372.0f;
+constexpr float kDeleteModalW = 320.0f;  // handoff README §4
 constexpr float kPairModalPadX = 24.0f;
 constexpr float kPairModalPadY = 26.0f;
 constexpr float kPairModalGap = 14.0f;   // column gap between stacked rows
@@ -1061,6 +1062,194 @@ void draw_pair_modal(const BridgeInput& in, BridgeState* state, BridgeAction* ou
     ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kPurple));
     ImGui::SetCursorScreenPos(ImVec2(tab_x + 12.0f * scale, tab_cy - title_size.y * 0.5f));
     cosmic::ui::TextSpaced("PAIR A MACHINE", 0.24f);
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+}
+
+void draw_delete_modal(const BridgeInput& in, BridgeState* state, BridgeAction* out_action) {
+    if (state->delete_modal_address.empty()) {
+        return;
+    }
+    const float scale = cosmic::ui::scale();
+    const ImVec2 vp_size = ImGui::GetMainViewport()->Size;
+    const float w = kDeleteModalW * scale;
+    const float pad_x = kPairModalPadX * scale;
+    const float pad_y = kPairModalPadY * scale;
+    const float gap = kPairModalGap * scale;
+    const float content_w = w - 2.0f * pad_x;
+
+    // Resolve the display name: the host's nickname if set, else its address;
+    // falls back to the raw target address if the host has already left this
+    // frame's snapshot.
+    std::string name = state->delete_modal_address;
+    for (const auto& host : in.hosts) {
+        if (host.address == state->delete_modal_address) {
+            name = host.nickname.empty() ? host.address : host.nickname;
+            break;
+        }
+    }
+    const std::string prefix = "Remove ";
+    const std::string suffix = " from your paired machines? This can't be undone.";
+
+    // Body height: measured over the FULL sentence in the semibold face, even
+    // though only the name run renders semibold. Semibold is never narrower
+    // than regular, so this is a deliberate upper bound — the panel can never
+    // end up too short for the real, mixed-weight body.
+    ImGui::PushFont(cosmic::ui::FontSansSemiBold());
+    ImGui::SetWindowFontScale(13.0f / 13.0f);
+    const std::string full_body = prefix + name + suffix;
+    const float body_h = ImGui::CalcTextSize(full_body.c_str(), nullptr, false, content_w).y;
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    // Button labels (mono bold 10), exactly as the Pair modal measures
+    // PAIR/CLOSE.
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(10.0f / 13.0f);
+    const ImVec2 delete_label = cosmic::ui::TextSpacedSize("DELETE", 0.22f);
+    const ImVec2 cancel_label = cosmic::ui::TextSpacedSize("CANCEL", 0.22f);
+    const float btn_h = delete_label.y + 18.0f * scale;
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    const float h = pad_y + body_h + gap + btn_h + pad_y;
+
+    // Centered, same idle position as the Pair modal (viewport 50%/44%). No
+    // slide animation — this modal only has the one, idle state.
+    const ImVec2 pos((vp_size.x - w) * 0.5f, 0.44f * vp_size.y - h * 0.5f);
+    const float content_x = pos.x + pad_x;
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const ImVec4 panel_bg = cosmic::ui::Rgba(kPanel);
+    const ImVec4 purple = cosmic::ui::Rgba(kPurple);
+    const ImVec4 red = cosmic::ui::Rgba(kRed);
+
+    // Scrim: full-viewport rgba(6,8,20,.6) (handoff README §4).
+    const ImVec4 scrim = cosmic::ui::Rgba(kScrim);
+    draw_list->AddRectFilled(ImVec2(0.0f, 0.0f), vp_size,
+                             ImGui::GetColorU32(ImVec4(scrim.x, scrim.y, scrim.z, 0.6f)));
+    // Click-to-close. Frame-guarded: the trash button opens this modal on the
+    // mouse PRESS (so the click that opens it can also commit an in-progress
+    // rename this same frame), and IsItemClicked() fires on press too —
+    // without the guard this InvisibleButton would see that identical press
+    // on its very first frame and close what the trash button just opened.
+    ImGui::SetCursorScreenPos(ImVec2(0.0f, 0.0f));
+    ImGui::InvisibleButton("##delscrim", vp_size);
+    if (ImGui::IsItemClicked() && ImGui::GetFrameCount() != state->delete_modal_frame) {
+        state->delete_modal_address.clear();
+    }
+
+    // Panel background (parent draw list, before the child): kPanel at 98%.
+    draw_list->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h),
+                             ImGui::GetColorU32(ImVec4(panel_bg.x, panel_bg.y, panel_bg.z, 0.98f)));
+
+    // Transparent child pinned "##deletemodal"; zero window padding so the
+    // clip rect covers the full panel.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::SetCursorScreenPos(pos);
+    ImGui::BeginChild("##deletemodal", ImVec2(w, h), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Body: three inline runs (regular/semibold/regular), wrapped to the
+    // content column.
+    ImGui::SetCursorScreenPos(ImVec2(content_x, pos.y + pad_y));
+    // PushTextWrapPos takes a WINDOW-LOCAL x, not a screen x — the child's
+    // origin is `pos`, so w - pad_x is the correct right edge.
+    ImGui::PushTextWrapPos(w - pad_x);
+    ImGui::PushFont(cosmic::ui::FontSansRegular());
+    ImGui::SetWindowFontScale(13.0f / 13.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kTextDim));
+    ImGui::TextUnformatted(prefix.c_str());
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::PushFont(cosmic::ui::FontSansSemiBold());
+    ImGui::SetWindowFontScale(13.0f / 13.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kText));
+    ImGui::TextUnformatted(name.c_str());
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::PushFont(cosmic::ui::FontSansRegular());
+    ImGui::SetWindowFontScale(13.0f / 13.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kTextDim));
+    ImGui::TextUnformatted(suffix.c_str());
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    ImGui::PopTextWrapPos();
+
+    // Button row: DELETE (kRed) + CANCEL (ghost, matching the Pair modal's
+    // CLOSE styling).
+    const float y = pos.y + pad_y + body_h + gap;
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(10.0f / 13.0f);
+    const ImVec2 delete_size(delete_label.x + 30.0f * scale, btn_h);
+    const ImVec2 cancel_size(cancel_label.x + 24.0f * scale, btn_h);
+    if (DrawButton("##delete_go", "DELETE", 0.22f, ImVec2(content_x, y), delete_size,
+                   ImGui::GetColorU32(Rgba(kRed)), ImGui::GetColorU32(Rgba(kRedHover)),
+                   0, 0, ImGui::GetColorU32(Rgba(kText)), ImGui::GetColorU32(Rgba(kText)),
+                   scale)) {
+        const std::string addr = state->delete_modal_address;
+        out_action->kind = BridgeAction::Remove;
+        out_action->address = addr;
+        // Post-delete fixups. `in.hosts` is this frame's snapshot and still
+        // contains the doomed host, so "first entry that isn't addr" is safe.
+        if (state->renaming == addr) {
+            state->renaming.clear();
+        }
+        if (state->selected == addr) {
+            state->selected.clear();
+            for (const auto& host : in.hosts) {
+                if (host.address != addr) {
+                    state->selected = host.address;
+                    break;
+                }
+            }
+        }
+        state->delete_modal_address.clear();
+    }
+    if (DrawButton("##delete_cancel", "CANCEL", 0.22f,
+                   ImVec2(content_x + delete_size.x + 10.0f * scale, y), cancel_size,
+                   0, 0, ImGui::GetColorU32(ImVec4(purple.x, purple.y, purple.z, 0.5f)),
+                   ImGui::GetColorU32(Rgba(kPurple)),
+                   ImGui::GetColorU32(Rgba(kPurple)), ImGui::GetColorU32(Rgba(kText)),
+                   scale)) {
+        state->delete_modal_address.clear();
+    }
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+
+    // Border, on the parent draw list so the perimeter is not clipped by the
+    // child's clip rect. rgba(176,85,107,.6) — kRed at 60% (handoff README §4).
+    draw_list->AddRect(pos, ImVec2(pos.x + w, pos.y + h),
+                       ImGui::GetColorU32(ImVec4(red.x, red.y, red.z, 0.6f)),
+                       0.0f, 0, 1.0f * scale);
+
+    // Border-tab title "DELETE MACHINE" (mono bold 12, .24em, kRed) on the top
+    // border, drawn after the child so the tab covers the border.
+    ImGui::PushFont(cosmic::ui::FontMonoBold());
+    ImGui::SetWindowFontScale(12.0f / 13.0f);
+    const ImVec2 title_size = cosmic::ui::TextSpacedSize("DELETE MACHINE", 0.24f);
+    const float tab_top = pos.y - 9.0f * scale;
+    const float tab_h = 14.0f * scale;
+    const float tab_cy = tab_top + tab_h * 0.5f;
+    const float tab_x = pos.x + 8.0f * scale;
+    const float tab_w = title_size.x + 24.0f * scale;
+    draw_list->AddRectFilled(ImVec2(tab_x, tab_top),
+                             ImVec2(tab_x + tab_w, tab_top + tab_h),
+                             ImGui::GetColorU32(ImVec4(panel_bg.x, panel_bg.y, panel_bg.z, 0.98f)));
+    ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kRed));
+    ImGui::SetCursorScreenPos(ImVec2(tab_x + 12.0f * scale, tab_cy - title_size.y * 0.5f));
+    cosmic::ui::TextSpaced("DELETE MACHINE", 0.24f);
     ImGui::PopStyleColor();
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();

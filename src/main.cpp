@@ -1057,6 +1057,12 @@ int main(int argc, char** argv) {
         } else if (bridge_result.action.kind == cosmic::ui::bridge::BridgeAction::Edit) {
             settings.set_host_nickname(bridge_result.action.address,
                                        bridge_result.action.nickname);
+        } else if (bridge_result.action.kind == cosmic::ui::bridge::BridgeAction::Remove) {
+            // No settings_dirty here: remove_host() persists itself and drops
+            // the wallpaper cache (settings.cpp:296-312), same contract as
+            // set_host_nickname() above. The presence poller picks the change
+            // up from the next frame's hosts_snapshot() (main.cpp:880-896).
+            settings.remove_host(bridge_result.action.address);
         } else if (bridge_result.action.kind ==
                    cosmic::ui::bridge::BridgeAction::SetResolution) {
             settings.resolution_mode = bridge_result.action.resolution;
