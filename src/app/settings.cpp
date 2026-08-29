@@ -1,5 +1,7 @@
 #include "app/settings.h"
 
+#include "app/wallcache.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -199,6 +201,7 @@ Settings Settings::load() {
     settings.fps = json_int(json, "fps", settings.fps);
     settings.bitrate_kbps = json_int(json, "bitrate_kbps", settings.bitrate_kbps);
     settings.autostart = json_bool(json, "autostart", settings.autostart);
+    settings.share_wallpaper = json_bool(json, "share_wallpaper", settings.share_wallpaper);
 
     // hosts is read by hand with contains()/is_*() guards: json.value() throws
     // nlohmann::type_error when a key exists with the wrong type, even on a
@@ -262,6 +265,7 @@ Settings::Settings(Settings&& other) noexcept
       fps(other.fps),
       bitrate_kbps(other.bitrate_kbps),
       autostart(other.autostart),
+      share_wallpaper(other.share_wallpaper),
       hosts(std::move(other.hosts)) {}
 
 void Settings::add_or_update_host(const std::string& address, bool paired) {
@@ -290,9 +294,9 @@ void Settings::add_or_update_host(const std::string& address, bool paired) {
 }
 
 bool Settings::remove_host(const std::string& address) {
+    const std::string addr = trim(address);
     {
         std::lock_guard lock(mutex_);
-        const std::string addr = trim(address);
         auto it = find_host(hosts, addr);
         if (it == hosts.end()) {
             return false;  // Nothing changed; skip the save().
@@ -300,6 +304,10 @@ bool Settings::remove_host(const std::string& address) {
         hosts.erase(it);
     }
     save();
+    // This is the single seam every host removal passes through (there is no
+    // /unpair route, per the comment above), which is why the cache-drop hook
+    // lives here rather than in a UI action handler.
+    cosmic::wallcache::forget(addr);
     return true;
 }
 
@@ -390,6 +398,7 @@ bool Settings::save() const {
         {"fps", fps},
         {"bitrate_kbps", bitrate_kbps},
         {"autostart", autostart},
+        {"share_wallpaper", share_wallpaper},
         {"hosts", hosts_json},
     };
 

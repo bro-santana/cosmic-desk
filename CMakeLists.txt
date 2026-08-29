@@ -95,11 +95,13 @@ add_executable(cosmicdesk
     src/app/autostart.cpp
     src/app/presence.cpp
     src/app/settings.cpp
+    src/app/wallcache.cpp
     src/app/service_ctrl.cpp
     src/app/single_instance.cpp
     src/hostglue/host.cpp
     src/hostglue/pin_bridge.cpp
     src/hostglue/displays.cpp
+    src/hostglue/wallpaper.cpp
     src/ui/pin_dialog.cpp
     src/ui/scale.cpp
     src/ui/theme.cpp
@@ -126,6 +128,8 @@ target_include_directories(cosmicdesk PRIVATE
     # src/viewer/*.cpp include <Limelight.h> and <client.h>.
     ${CMAKE_CURRENT_SOURCE_DIR}/third-party/moonlight-common-c/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third-party/libgamestream
+    # src/ui/bridge/scene.cpp includes <stb_image.h> to decode the Bridge wallpaper backdrop.
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/stb
 )
 
 # cosmic_host is C++23; the glue and everything else in this binary must agree.
@@ -163,8 +167,10 @@ target_link_libraries(cosmicdesk PRIVATE
 
 if(WIN32)
     # shell32 provides ExtractIconEx for the tray icon; iphlpapi provides
-    # GetTcpTable for the --shortcut readiness poll (plan M9.1).
-    target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32 iphlpapi)
+    # GetTcpTable for the --shortcut readiness poll (plan M9.1); wtsapi32
+    # provides WTSQuerySessionInformationW/WTSFreeMemory for the wallpaper
+    # provider's off-session fallback (plan D10c).
+    target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32 iphlpapi wtsapi32)
     # GUI app by default (WIN32_EXECUTABLE TRUE): no console window, so closing
     # the (never-shown) console cannot kill the tray app. Debug keeps a console
     # for log output; override either way with -DCOSMIC_CONSOLE=ON/OFF.

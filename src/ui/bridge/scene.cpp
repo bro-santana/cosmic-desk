@@ -12,9 +12,25 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
+
+// stb_image is a header-only library: exactly one translation unit in the
+// whole program must define STB_IMAGE_IMPLEMENTATION to emit its function
+// bodies, and this is it (PLAN.md D10(e), W3 backdrop decode). The cached
+// wallpaper files wallcache.cpp writes are always JPEG, PNG or BMP, so the
+// other decoders are compiled out; STBI_NO_STDIO keeps stb off its own fopen
+// path since the file is read via std::ifstream below (see
+// LoadBackdropTexture). Do not edit the vendored header itself.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_ONLY_BMP
+#include <stb_image.h>
 
 #include "ui/bridge/design.h"
 #include "ui/scale.h"
@@ -104,6 +120,7 @@ constexpr Layer kLayers[] = {
     {"planets.svg",     13.0f,   0.0f, -32.0f, 1.02f, 1.00f, 32.0f,  14.0f, -10.0f,  -8.0f, 16.0f},
     {"desk.svg",        26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"monitor.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
+    {"monitor-bezel.svg", 26.0f, 0.0f, 10.0f, 1.03f, 1.00f, 0.0f, 0.0f, 0.0f, 0.0f},
     {"screen-logo.svg", 26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},  // alpha overridden per-frame (U2)
     {"obj-g11.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
     {"obj-g18.svg",     26.0f,   0.0f,  10.0f, 1.03f, 1.00f,  0.0f,   0.0f,   0.0f,   0.0f},
@@ -117,7 +134,10 @@ constexpr int kLayerCount = static_cast<int>(sizeof(kLayers) / sizeof(kLayers[0]
 // The reflex and screen-logo layers are the exceptions whose alpha is driven
 // per-frame (the glint value / the caller's boot fade) instead of the table.
 constexpr int kReflexIndex = kLayerCount - 1;
-constexpr int kScreenLogoIndex = 13;  // screen-logo.svg entry in kLayers
+constexpr int kScreenLogoIndex = 14;  // screen-logo.svg entry in kLayers
+// The monitor-bezel layer marks where the panel wallpaper draws (PLAN.md
+// D10(e)): after monitor.svg's dark panel, before the bezel texture itself.
+constexpr int kMonitorBezelIndex = 13;  // monitor-bezel.svg entry in kLayers
 
 // Cursor chase tuning (per-frame factors at a nominal 60 fps, time-corrected
 // in draw() like every other easing). The onset ramp mirrors the warp
@@ -156,6 +176,18 @@ struct WarpStar {
     bool blue;    // 25% ice-blue rgb(178,208,255), rest white
 };
 
+// One decoded backdrop texture, keyed by its cache file path (PLAN.md
+// D10(e)). Owned by the LRU in State::backdrop_lru; last_use_ms drives
+// eviction once the LRU is full. w/h are the decoded image's pixel size,
+// needed for the cover-scale crop at draw time.
+struct BackdropEntry {
+    std::string path;
+    SDL_Texture* tex = nullptr;
+    int w = 0;
+    int h = 0;
+    uint64_t last_use_ms = 0;
+};
+
 // Module state. All textures are owned here and rebuilt on resize.
 struct State {
     bool initialized = false;
@@ -189,6 +221,30 @@ struct State {
     // randomness (visual only, no determinism requirement).
     std::vector<WarpStar> warp_stars;
     uint64_t warp_seed = 1234;
+    // Backdrop (PLAN.md D10(e), W3): decoded wallpaper textures are
+    // viewport-independent, so RasterizeAll/resize never touches this state.
+    // backdrop_lru caches up to 4 decoded textures by path; backdrop_failed
+    // remembers paths whose decode failed so they are logged and skipped once,
+    // never retried per frame. backdrop_cur is the texture currently shown;
+    // backdrop_prev holds the outgoing one during a crossfade (tex == nullptr
+    // when there is none). backdrop_fade_start_s anchors the crossfade in
+    // in.time_s (-1 = not crossfading); backdrop_eased_alpha is the current
+    // alpha, eased every frame toward in.backdrop_alpha (or toward 0 when the
+    // requested path is unresolvable, see backdrop_req_unresolvable).
+    // backdrop_req_path/backdrop_req_unresolvable track the last non-empty
+    // in.backdrop_path draw() looked up and whether it failed to decode,
+    // separately from backdrop_cur.path: this is what lets a bad path be
+    // resolved exactly once (not re-scanned every frame) and what tells
+    // draw() to fade backdrop_cur's stale texture out rather than keep
+    // showing the previous host's wallpaper under the new host's name.
+    std::vector<BackdropEntry> backdrop_lru;
+    std::vector<std::string> backdrop_failed;
+    BackdropEntry backdrop_cur;
+    BackdropEntry backdrop_prev;
+    double backdrop_fade_start_s = -1.0;
+    float backdrop_eased_alpha = 0.0f;
+    std::string backdrop_req_path;
+    bool backdrop_req_unresolvable = false;
 };
 
 State g_state;
@@ -450,6 +506,185 @@ SDL_Texture* BuildVignette(SDL_Renderer* renderer, int tex_w, int tex_h) {
     }
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
     return tex;
+}
+
+// Cap on decoded backdrop image dimensions (PLAN.md D10(e)): anything larger
+// is treated as a decode failure rather than risking a huge allocation from a
+// corrupt or oversized cache file.
+constexpr int kBackdropMaxDim = 8192;
+
+// Cap on the backdrop LRU (PLAN.md D10(e), W3): only the current and previous
+// (crossfade) textures ever need to stay resident; 4 gives headroom for quick
+// back-and-forth hovering between cards without unbounded growth.
+constexpr int kBackdropLruCap = 4;
+
+// Backdrop fade tuning (PLAN.md D10(e), W3). kBackdropEaseRate60 is the
+// per-frame factor (time-corrected like every other easing in this file,
+// e.g. warp_k below) that ramps the eased alpha toward in.backdrop_alpha,
+// chosen so the ramp takes ~250ms; kBackdropCrossfadeS is the duration of the
+// path-change crossfade; kBackdropImageAlpha/kBackdropScrimAlpha are the
+// image/scrim alpha at full presence (eased alpha 1, warp_t 0);
+// kBackdropMinAlpha is the visibility floor below which a draw is skipped
+// entirely (like kMoveEps/kSettleEps above, named rather than a bare literal).
+constexpr float kBackdropEaseRate60 = 0.13f;
+constexpr float kBackdropCrossfadeS = 0.25f;
+constexpr float kBackdropImageAlpha = 0.40f;
+constexpr float kBackdropScrimAlpha = 0.45f;
+constexpr float kBackdropMinAlpha = 0.002f;
+// The in-scene monitor panel's wallpaper (PLAN.md D10(e)) is not capped at
+// kBackdropImageAlpha and has no scrim: unlike the fullscreen backdrop behind
+// the UI, it must read as a real desktop rather than a dim silhouette.
+constexpr float kBackdropPanelAlpha = 1.0f;
+
+// Decodes a cached wallpaper image (JPEG/PNG/BMP only -- the only formats
+// wallcache.cpp ever writes) into an RGBA SDL texture. Reads the whole file
+// into memory with std::ifstream rather than stb's own fopen path
+// (STBI_NO_STDIO), then decodes via stb, which also magic-byte-sniffs the
+// format itself, so any other file type simply fails to decode here.
+// stbi_load_from_memory(req_comp=4) always emits bytes in R,G,B,A memory
+// order; SDL_PIXELFORMAT_ABGR8888 names a packed 32-bit pixel whose bytes are,
+// on a little-endian machine, that same R,G,B,A order (SDL_pixels.h documents
+// SDL_Color's r,g,b,a struct layout as matching "SDL_PIXELFORMAT_ABGR8888 on
+// little-endian systems"), so the decoded bytes upload with no channel swap.
+// Returns null on any failure (unreadable/corrupt/oversized); the caller logs
+// once per path via LogError.
+SDL_Texture* LoadBackdropTexture(SDL_Renderer* renderer, const std::string& path,
+                                 int& out_w, int& out_h) {
+    // `path` is UTF-8 (wallcache.cpp builds it from std::filesystem::path);
+    // std::ifstream(const std::string&) would open it via the CRT's narrow
+    // fopen, which decodes bytes with the process ANSI code page and mangles
+    // any non-ASCII profile directory (e.g. C:\Users\Jos\xe9\...). Going
+    // through std::filesystem::path(const char*) instead decodes the UTF-8
+    // correctly on this (libstdc++/MinGW) toolchain, so the open round-trips.
+    // Do not "simplify" this back to a bare std::string overload.
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    if (!file) {
+        return nullptr;
+    }
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
+                                     std::istreambuf_iterator<char>());
+    if (bytes.empty()) {
+        return nullptr;
+    }
+
+    // stbi_info_from_memory reads just the header, so an oversized image is
+    // rejected before the full decode/allocation below.
+    int w = 0;
+    int h = 0;
+    int comp = 0;
+    if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w,
+                               &h, &comp) ||
+        w <= 0 || h <= 0 || w > kBackdropMaxDim || h > kBackdropMaxDim) {
+        return nullptr;
+    }
+
+    unsigned char* pixels = stbi_load_from_memory(
+        bytes.data(), static_cast<int>(bytes.size()), &w, &h, &comp, 4);
+    if (pixels == nullptr) {
+        return nullptr;
+    }
+
+    SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
+                                         SDL_TEXTUREACCESS_STATIC, w, h);
+    if (tex == nullptr) {
+        std::fprintf(stderr, "[scene] SDL_CreateTexture (backdrop) failed: %s\n",
+                     SDL_GetError());
+        stbi_image_free(pixels);
+        return nullptr;
+    }
+    if (SDL_UpdateTexture(tex, nullptr, pixels, w * 4) != 0) {
+        std::fprintf(stderr, "[scene] SDL_UpdateTexture (backdrop) failed: %s\n",
+                     SDL_GetError());
+        SDL_DestroyTexture(tex);
+        stbi_image_free(pixels);
+        return nullptr;
+    }
+    stbi_image_free(pixels);
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    out_w = w;
+    out_h = h;
+    return tex;
+}
+
+// Fetches the decoded texture for `path` from the LRU, decoding and inserting
+// it on a miss. Returns null -- after logging once and remembering the path in
+// backdrop_failed -- for a path that fails to decode; a path already in
+// backdrop_failed is never retried. On a cache hit this is a linear scan over
+// at most 4 entries: no decode, no file I/O, no allocation.
+BackdropEntry* ResolveBackdropTexture(SDL_Renderer* renderer, const std::string& path,
+                                      uint64_t now_ms) {
+    for (BackdropEntry& e : g_state.backdrop_lru) {
+        if (e.path == path) {
+            e.last_use_ms = now_ms;
+            return &e;
+        }
+    }
+    if (std::find(g_state.backdrop_failed.begin(), g_state.backdrop_failed.end(),
+                 path) != g_state.backdrop_failed.end()) {
+        return nullptr;
+    }
+
+    int w = 0;
+    int h = 0;
+    SDL_Texture* tex = LoadBackdropTexture(renderer, path, w, h);
+    if (tex == nullptr) {
+        const std::string msg = "failed to decode backdrop " + path;
+        LogError(msg.c_str());
+        g_state.backdrop_failed.push_back(path);
+        return nullptr;
+    }
+
+    if (static_cast<int>(g_state.backdrop_lru.size()) >= kBackdropLruCap) {
+        // Evict the least-recently-used entry that isn't pinned as the
+        // current or previous (crossfade) texture; with a cap of 4 and at
+        // most 2 pinned slots there is always an evictable entry.
+        auto victim = g_state.backdrop_lru.end();
+        for (auto it = g_state.backdrop_lru.begin();
+             it != g_state.backdrop_lru.end(); ++it) {
+            if (it->tex == g_state.backdrop_cur.tex ||
+                it->tex == g_state.backdrop_prev.tex) {
+                continue;
+            }
+            if (victim == g_state.backdrop_lru.end() ||
+                it->last_use_ms < victim->last_use_ms) {
+                victim = it;
+            }
+        }
+        if (victim != g_state.backdrop_lru.end()) {
+            DestroyTexture(victim->tex);
+            g_state.backdrop_lru.erase(victim);
+        }
+    }
+
+    g_state.backdrop_lru.push_back(BackdropEntry{path, tex, w, h, now_ms});
+    return &g_state.backdrop_lru.back();
+}
+
+// Draws a decoded backdrop entry cover-scaled into `dst`, cropping whichever
+// source axis overflows dst's aspect so no letterboxing shows. Shared by the
+// fullscreen backdrop and the in-scene monitor panel wallpaper (PLAN.md
+// D10(e)): both crop the same way, only the dest rect and alpha differ.
+// No-ops on a null/empty entry or an alpha at or below kBackdropMinAlpha.
+void DrawBackdropCovered(SDL_Renderer* renderer, const BackdropEntry& e,
+                         const SDL_FRect& dst, float alpha) {
+    if (e.tex == nullptr || e.w <= 0 || e.h <= 0 || alpha <= kBackdropMinAlpha) {
+        return;
+    }
+    SDL_Rect src{0, 0, e.w, e.h};
+    const float img_aspect = static_cast<float>(e.w) / static_cast<float>(e.h);
+    const float dst_aspect = dst.w / dst.h;
+    if (img_aspect > dst_aspect) {
+        src.w = std::min(
+            e.w, static_cast<int>(std::lround(static_cast<float>(e.h) * dst.w / dst.h)));
+        src.x = (e.w - src.w) / 2;
+    } else {
+        src.h = std::min(
+            e.h, static_cast<int>(std::lround(static_cast<float>(e.w) * dst.h / dst.w)));
+        src.y = (e.h - src.h) / 2;
+    }
+    SDL_SetTextureAlphaMod(
+        e.tex, static_cast<Uint8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
+    SDL_RenderCopyF(renderer, e.tex, &src, &dst);
 }
 
 // Builds the shooting-star streak texture at a fixed 170x2 (the dest rect
@@ -899,6 +1134,26 @@ SDL_FRect DeskDest(int out_w, int out_h) {
     };
 }
 
+// The monitor screen panel's rect within the desk art box, as fractions of
+// DeskDest (handoff README, monitor.svg's PanelOff bbox: x=629.9053,
+// y=354.88638, w=462.98959, h=283.96115 of the 1620.8481x1200 art box).
+// screen_rect() (public) and the panel wallpaper draw in draw() both derive
+// from ScreenPanelDest so the fractions exist once.
+constexpr float kScreenPanelLeftFrac = 0.3886f;
+constexpr float kScreenPanelTopFrac = 0.2957f;
+constexpr float kScreenPanelWidthFrac = 0.2856f;
+constexpr float kScreenPanelHeightFrac = 0.2366f;
+
+SDL_FRect ScreenPanelDest(int out_w, int out_h) {
+    const SDL_FRect desk = DeskDest(out_w, out_h);
+    return SDL_FRect{
+        desk.x + kScreenPanelLeftFrac * desk.w,
+        desk.y + kScreenPanelTopFrac * desk.h,
+        kScreenPanelWidthFrac * desk.w,
+        kScreenPanelHeightFrac * desk.h,
+    };
+}
+
 }  // namespace
 
 void init(SDL_Renderer* renderer) {
@@ -947,6 +1202,24 @@ void shutdown(SDL_Renderer* renderer) {
     g_state.flash_pending = false;
     g_state.warp_stars.clear();
     g_state.warp_stars.shrink_to_fit();
+    // Backdrop (PLAN.md D10(e)): the LRU is the sole owner of every decoded
+    // texture; backdrop_cur/backdrop_prev only ever alias an LRU entry's
+    // pointer (see ResolveBackdropTexture), so destroying them a second time
+    // here would double-free -- resetting the slots (no DestroyTexture call
+    // on them) is correct.
+    for (BackdropEntry& e : g_state.backdrop_lru) {
+        DestroyTexture(e.tex);
+    }
+    g_state.backdrop_lru.clear();
+    g_state.backdrop_lru.shrink_to_fit();
+    g_state.backdrop_failed.clear();
+    g_state.backdrop_failed.shrink_to_fit();
+    g_state.backdrop_cur = BackdropEntry{};
+    g_state.backdrop_prev = BackdropEntry{};
+    g_state.backdrop_fade_start_s = -1.0;
+    g_state.backdrop_eased_alpha = 0.0f;
+    g_state.backdrop_req_path.clear();
+    g_state.backdrop_req_unresolvable = false;
     g_state.initialized = false;
 }
 
@@ -1054,7 +1327,143 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         SDL_RenderCopy(renderer, g_state.bg, nullptr, &dst);
     }
 
-    // 4. Twinkles (exact prototype replication).
+    // 4. Backdrop: the focused host's cached wallpaper, cover-scaled and
+    // scrimmed, drawn between the background gradient and the twinkle/star
+    // layers (PLAN.md D10(e), W3). Viewport-independent -- RasterizeAll above
+    // never touches these textures, so a resize does not re-decode.
+    //
+    // presence/backdrop_x are declared here (rather than inside the block
+    // below) because the panel wallpaper draw in the layer loop further down
+    // reuses this frame's exact values: the panel and the fullscreen backdrop
+    // share one focus model, not two independently computed ones.
+    float presence = 0.0f;
+    float backdrop_x = 1.0f;
+    {
+        // Resolve a NON-EMPTY, changed path first (before the easing below,
+        // which needs to know whether it succeeded). backdrop_req_path tracks
+        // the last path looked up here, separately from backdrop_cur.path, so
+        // an unresolvable path is only ever looked up once -- the LRU scan
+        // and the backdrop_failed check are skipped on every later frame the
+        // same bad path is requested, keeping the steady-state cost a single
+        // string compare either way.
+        if (!in.backdrop_path.empty() && in.backdrop_path != g_state.backdrop_req_path) {
+            g_state.backdrop_req_path = in.backdrop_path;
+            BackdropEntry* entry =
+                ResolveBackdropTexture(renderer, in.backdrop_path, now_ms);
+            g_state.backdrop_req_unresolvable = (entry == nullptr);
+            if (entry != nullptr) {
+                if (entry->tex == g_state.backdrop_cur.tex) {
+                    // The resolved texture is already the one on screen (e.g.
+                    // re-focusing a host after an intervening unresolvable
+                    // one): just refresh backdrop_cur's bookkeeping (path may
+                    // differ, LRU last_use_ms was already bumped by
+                    // ResolveBackdropTexture) and leave any in-progress
+                    // crossfade alone -- re-arming one here would blend the
+                    // same image over itself and visibly over-brighten it.
+                    g_state.backdrop_cur = *entry;
+                } else {
+                    const bool had_current = g_state.backdrop_cur.tex != nullptr;
+                    g_state.backdrop_prev = g_state.backdrop_cur;
+                    g_state.backdrop_cur = *entry;
+                    // Only arm the crossfade when there was something to fade
+                    // FROM. On the very first backdrop, backdrop_eased_alpha
+                    // above already provides the fade-in; arming a
+                    // from-nothing crossfade would ramp the image at
+                    // presence*x while the scrim (below) ramps at presence
+                    // alone, so the scrim would visibly darken the screen
+                    // before the wallpaper caught up.
+                    if (had_current) {
+                        g_state.backdrop_fade_start_s = in.time_s;
+                    }
+                }
+            }
+        }
+
+        // An empty path does NOT drop the current texture: it keeps drawing
+        // while the eased alpha below falls to 0, which is what makes
+        // hover-leave fade out instead of snapping. A NON-EMPTY but
+        // unresolvable path (host has no cache yet, bad file, etc.) fades the
+        // same way -- backdrop_cur is left showing the last host that DID
+        // resolve, and easing its target to 0 here makes it fade out rather
+        // than keep masquerading as the newly-focused host's wallpaper.
+        const bool fade_to_zero =
+            in.backdrop_path.empty() ||
+            (in.backdrop_path == g_state.backdrop_req_path &&
+             g_state.backdrop_req_unresolvable);
+        const float backdrop_k =
+            1.0f - std::pow(1.0f - kBackdropEaseRate60, dt * 60.0f);
+        const float backdrop_target =
+            fade_to_zero ? 0.0f : std::clamp(in.backdrop_alpha, 0.0f, 1.0f);
+        g_state.backdrop_eased_alpha +=
+            (backdrop_target - g_state.backdrop_eased_alpha) * backdrop_k;
+
+        presence = g_state.backdrop_eased_alpha * (1.0f - g_state.warp_t);
+        const float image_alpha = presence * kBackdropImageAlpha;
+
+        // The fullscreen backdrop covers the full viewport; DrawBackdropCovered
+        // crops whichever source axis overflows that dest's aspect so it shows
+        // no letterboxing.
+        const SDL_FRect full_dst{0.0f, 0.0f, static_cast<float>(out_w),
+                                 static_cast<float>(out_h)};
+
+        if (image_alpha > kBackdropMinAlpha) {
+            // backdrop_x is the linear 0..1 crossfade progress since
+            // backdrop_fade_start_s; 1.0 (fully faded in) when there is no
+            // active crossfade. Computed before any drawing so the x >= 1
+            // release below always runs on the frame the crossfade actually
+            // completes, even if presence (and so image_alpha) had dropped to
+            // ~0 and back while a fade was still armed (e.g. the warp, or the
+            // weight dipping within 250ms of a path change) -- otherwise
+            // backdrop_fade_start_s could stay stuck pointing at a long-past
+            // anchor and the stale prev texture would flash back in for one
+            // frame once presence returns.
+            backdrop_x = 1.0f;
+            if (g_state.backdrop_fade_start_s >= 0.0) {
+                backdrop_x = std::clamp(
+                    static_cast<float>((in.time_s - g_state.backdrop_fade_start_s) /
+                                       kBackdropCrossfadeS),
+                    0.0f, 1.0f);
+                if (backdrop_x < 1.0f) {
+                    // True cross-dissolve: prev ramps DOWN from image_alpha as
+                    // cur ramps UP from 0, so total coverage stays close to
+                    // image_alpha throughout instead of drawing prev at a
+                    // constant image_alpha (which would grow coverage through
+                    // the fade, then drop it in one frame at release -- e.g.
+                    // at image_alpha = 0.40 that was background visibility
+                    // 0.36 mid-fade snapping to 0.60 the instant prev is
+                    // dropped).
+                    DrawBackdropCovered(renderer, g_state.backdrop_prev, full_dst,
+                                        image_alpha * (1.0f - backdrop_x));
+                } else {
+                    // Crossfade done: release the previous slot back to the
+                    // LRU (the entry itself stays cached there; only this
+                    // pinned reference is cleared) and stop drawing it.
+                    g_state.backdrop_prev = BackdropEntry{};
+                    g_state.backdrop_fade_start_s = -1.0;
+                }
+            }
+            DrawBackdropCovered(renderer, g_state.backdrop_cur, full_dst,
+                                image_alpha * backdrop_x);
+        }
+
+        // Dark scrim over the backdrop, scaling with presence so it fades out
+        // together with the image. Also gated on backdrop_cur actually having
+        // a texture: presence alone can be nonzero (e.g. main.cpp's hover
+        // weight) even when there is nothing cached yet to show behind it, and
+        // the scrim must never darken a backdrop-less scene.
+        // SDL_BLENDMODE_BLEND is already set at the top of draw(); the
+        // twinkle pass below sets its own draw color, so nothing to restore.
+        const float scrim_alpha = presence * kBackdropScrimAlpha;
+        if (scrim_alpha > kBackdropMinAlpha && g_state.backdrop_cur.tex != nullptr) {
+            const SDL_Rect dst{0, 0, out_w, out_h};
+            SDL_SetRenderDrawColor(
+                renderer, 0, 0, 0,
+                static_cast<Uint8>(std::clamp(scrim_alpha, 0.0f, 1.0f) * 255.0f));
+            SDL_RenderFillRect(renderer, &dst);
+        }
+    }
+
+    // 5. Twinkles (exact prototype replication).
     const float scale = cosmic::ui::scale();
     const SDL_Color text = SdlColor(kText);
     for (const Twinkle& t : g_state.twinkles) {
@@ -1073,7 +1482,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         SDL_RenderFillRect(renderer, &rect);
     }
 
-    // 5. Layer pass, back -> front.
+    // 6. Layer pass, back -> front.
     // Guard motion like the easing above: U5 will animate it, and a non-finite
     // value would re-poison every dest rect the same way the mouse NaN did.
     const float motion = GuardedMotion(in.motion);
@@ -1152,6 +1561,42 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
                 0.30f * desk.h,
             };
             SDL_RenderCopyF(renderer, g_state.glow, nullptr, &glow_dest);
+        }
+
+        // Panel wallpaper (PLAN.md D10(e)): the same focused-host backdrop
+        // decoded in section 4 above also fills the in-scene monitor's screen
+        // panel, framed by monitor-bezel.svg, so it reads as that PC's actual
+        // desktop. Sits between monitor.svg's dark panel and the bezel texture
+        // (draw order: monitor.svg -> panel wallpaper -> monitor-bezel.svg ->
+        // screen-logo.svg -> obj-* -> reflex), reusing this frame's presence
+        // and backdrop_x from section 4 -- the panel and the fullscreen
+        // backdrop are driven by the SAME focus source, never a second one, so
+        // when nothing is focused (including after a stream ends, once the
+        // Bridge clears its stale selection) the panel fades out together
+        // with the fullscreen backdrop. Unlike the fullscreen backdrop it is
+        // not capped at kBackdropImageAlpha and has no scrim (kBackdropPanelAlpha):
+        // it must read as a real desktop, not a dim silhouette behind the UI.
+        // Also gated by (1 - screen_logo_alpha): screen-logo.svg is a disc, not
+        // a full-panel fill, so without this the wallpaper would show through
+        // in the panel corners around it during boot; fading in as the logo
+        // fades out also reads as the PC turning on (PLAN.md D10(e)).
+        if (i == kMonitorBezelIndex) {
+            const float panel_alpha = presence * kBackdropPanelAlpha *
+                                      std::clamp(1.0f - in.screen_logo_alpha, 0.0f, 1.0f);
+            if (panel_alpha > kBackdropMinAlpha) {
+                const SDL_FRect panel_dst = ScreenPanelDest(out_w, out_h);
+                // Unlike section 4's true cross-dissolve (safe over the
+                // scrimmed, capped fullscreen backdrop), the panel sits over an
+                // OPAQUE dark PanelOff rect: ramping prev down while cur ramps
+                // up would dip total coverage mid-fade and let that dark panel
+                // show through. Draw prev at the full panel_alpha and let cur
+                // ramp up over it instead, so coverage never drops below
+                // panel_alpha during the crossfade.
+                DrawBackdropCovered(renderer, g_state.backdrop_prev, panel_dst,
+                                    panel_alpha);
+                DrawBackdropCovered(renderer, g_state.backdrop_cur, panel_dst,
+                                    panel_alpha * backdrop_x);
+            }
         }
 
         SDL_Texture* tex = g_state.layers[i];
@@ -1280,7 +1725,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         }
     }
 
-    // 6. Orbit ring (dashed ellipse), drawn after the desk group per A3 order
+    // 7. Orbit ring (dashed ellipse), drawn after the desk group per A3 order
     // (...desk -> orbit ring -> beams -> vignette). Replicates the prototype's
     // ring div: dashed ellipse min(82vw,1240px) x min(74vh,720px) centered at
     // 50%/47%, rotated -8deg with a 22s ease-in-out sway to -5deg at the 50%
@@ -1305,7 +1750,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
                           46, 3.0f * scale, 7.0f * scale, 0.0f, 1.0f * scale);
     }
 
-    // 7. Vignette, drawn LAST in the SDL scene pass (A3). Full-viewport edge
+    // 8. Vignette, drawn LAST in the SDL scene pass (A3). Full-viewport edge
     // fade; the texture is rebuilt on resize like the bg and drawn stretched.
     if (g_state.vignette != nullptr) {
         const SDL_Rect dst{0, 0, out_w, out_h};
@@ -1332,14 +1777,9 @@ SDL_FRect screen_rect(int out_w, int out_h) {
         return SDL_FRect{0.0f, 0.0f, 0.0f, 0.0f};
     }
     // Handoff README: the monitor screen is 38.86%/29.57%/28.56%/23.66% of the
-    // art box (left/top/w/h), mapped through the desk transform.
-    const SDL_FRect desk = DeskDest(out_w, out_h);
-    return SDL_FRect{
-        desk.x + 0.3886f * desk.w,
-        desk.y + 0.2957f * desk.h,
-        0.2856f * desk.w,
-        0.2366f * desk.h,
-    };
+    // art box (left/top/w/h), mapped through the desk transform; ScreenPanelDest
+    // holds the fractions once (also used by the panel wallpaper draw).
+    return ScreenPanelDest(out_w, out_h);
 }
 
 CursorSmooth smoothed_cursor() {

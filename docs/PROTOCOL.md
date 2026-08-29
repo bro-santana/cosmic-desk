@@ -12,7 +12,7 @@ already using these ports on the same machine.
 
 | Offset | Default | Proto | Purpose |
 |---|---|---|---|
-| −5 | 47984 | TCP/HTTPS | Pairing completion, authenticated API (applist, launch, resume, cancel) |
+| −5 | 47984 | TCP/HTTPS | Pairing completion, authenticated API (applist, launch, resume, cancel, wallpaper) |
 | 0 | 47989 | TCP/HTTP | `serverinfo`, pairing phases 1–4 |
 | +9 | 47998 | UDP | Video RTP |
 | +10 | 47999 | UDP | Control / input (ENet, encrypted) |
@@ -46,7 +46,7 @@ can be populated. Cosmic Desk adds two elements to the existing `/serverinfo` XM
 response:
 
 ```xml
-<CosmicVersion>1</CosmicVersion>
+<CosmicVersion>2</CosmicVersion>
 <CosmicDisplays>
   <Display index="0" name="\\.\DISPLAY1" width="2560" height="1440" fps="165" primary="1" active="1"/>
   <Display index="1" name="\\.\DISPLAY2" width="1920" height="1080" fps="60" primary="0" active="0"/>
@@ -54,10 +54,45 @@ response:
 ```
 
 - `active="1"` marks the display currently being captured.
+- Version 2 adds `<CosmicWallpaperHash>`, described in the next section.
 - Stock Moonlight clients ignore unknown XML elements, so a stock client still pairs and
   streams against a Cosmic Desk host.
 - When the elements are absent (i.e. the host is stock Sunshine), the viewer falls back
   to 1920×1080 for "Host native".
+
+## Cosmic extension: wallpaper sync
+
+The viewer can show the host's desktop wallpaper before a session starts. `/serverinfo`
+gains one more optional element alongside `<CosmicDisplays>`:
+
+```xml
+<CosmicVersion>2</CosmicVersion>
+<CosmicWallpaperHash>9f86d081884c7d65...</CosmicWallpaperHash>
+```
+
+- The value is the lowercase hex SHA-256 (64 characters) of the wallpaper image file.
+  The element is served on both the HTTP and HTTPS ports.
+- Omitted when there is nothing to hash: a solid-colour desktop, no interactive session,
+  an unreadable file, a file over 8 MB, or the host's `share_wallpaper` setting off.
+
+The image itself is fetched from `GET /cosmic/wallpaper`, available **only on the HTTPS
+port** (`port_base − 5`, default 47984) — i.e. only to clients whose certificate has
+already passed verification. There is no equivalent route on the plain HTTP port. It
+returns the wallpaper file bytes as-is, with `Content-Type` sniffed from magic bytes
+(`image/jpeg`, `image/png`, `image/bmp`); anything else, or no current wallpaper, is a
+404. Same ~8 MB size cap as the hash above.
+
+Wallpapers are frequently personal photos, so the split mirrors the stream's own trust
+boundary: the hash, which leaks nothing meaningful, rides the open port, while the image
+is confined to the client-certificate-authenticated port. `share_wallpaper` in
+`cosmic.json` (default on) turns the whole feature off host-side.
+
+On the client, the existing ~10 s `/serverinfo` presence poll extracts the hash; a change
+from the cached hash triggers exactly one download, cached at
+`<config dir>/wallpapers/<host-key>.<hash>.img`. The host never pushes an update.
+
+Stock Moonlight clients ignore the unknown elements and still pair and stream; against a
+stock Sunshine host the hash is simply absent, so the client shows no wallpaper.
 
 ## Cosmic convention: mid-stream monitor switching
 

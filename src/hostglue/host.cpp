@@ -3,6 +3,7 @@
 // minus the parts Cosmic Desk replaces (web UI, tray, service, signal handlers).
 
 #include "hostglue/host.h"
+#include "hostglue/wallpaper.h"
 
 // Vendored Sunshine headers. Only this TU depends on them; host.h stays
 // self-contained. The include root is host/sunshine (see top-level CMakeLists).
@@ -245,6 +246,10 @@ bool start(const Settings &settings) {
   if (!write_host_conf(settings)) {
     return false;
   }
+
+  // Must be set before nvhttp's /serverinfo and /cosmic/wallpaper handlers
+  // can be reached, since both consult the wallpaper provider.
+  cosmic::wallpaper::set_enabled(settings.share_wallpaper);
 
   mail::man = std::make_shared<safe::mail_raw_t>();
 

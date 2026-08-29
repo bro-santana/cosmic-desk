@@ -40,6 +40,9 @@ struct Settings {
     int bitrate_kbps = 20000;
 
     bool autostart = false;
+    // Host-side opt-out for the wallpaper the host advertises in /serverinfo
+    // and serves on the authenticated HTTPS port (plan D10b); default on.
+    bool share_wallpaper = true;
     std::vector<SavedHost> hosts;
 
     // Adds the host if unknown, else updates it. Insert appends (nickname="",

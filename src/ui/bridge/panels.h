@@ -31,6 +31,11 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
 // StartPair / CancelPair / ClosePair.
 void draw_pair_modal(const BridgeInput& in, BridgeState* state, BridgeAction* out_action);
 
+// Draws the delete-confirmation modal when state->delete_modal_address is not
+// empty: scrim + centered panel asking to forget that host. Emits Remove on
+// confirm; CANCEL and a scrim click just close the modal.
+void draw_delete_modal(const BridgeInput& in, BridgeState* state, BridgeAction* out_action);
+
 // Draws the pairing PIN on the in-scene monitor when in.pairing_show_pin.
 // Emits no actions.
 void draw_pin_panel(const BridgeInput& in, BridgeState* state);

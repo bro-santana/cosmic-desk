@@ -60,6 +60,7 @@ constexpr float kCardPadX = 17.0f;
 constexpr float kCardPadTop = 15.0f;
 constexpr float kCardGap = 9.0f;
 constexpr float kEditBtnSize = 30.0f;  // rename (✎) ghost button, design px
+constexpr float kTrashBtnSize = 32.0f;  // delete (trash) button, design px
 
 // Card depth (parallax weight) and float-bob period cycle by index (i % 3).
 constexpr float kCardDepths[] = {88.0f, 102.0f, 94.0f};
@@ -458,8 +459,8 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
                             edit_pos.y + edit_size.y * 0.5f);
             const ImVec2 ax(0.7071f, 0.7071f);   // 45-degree axis
             const ImVec2 nm(-0.7071f, 0.7071f);  // perpendicular
-            const float half = 9.0f * scale;     // half length of the pencil
-            const float hw = 2.2f * scale;       // shaft half width
+            const float half = 5.5f * scale;     // half length of the pencil
+            const float hw = 1.3f * scale;       // shaft half width
             const auto mul = [](const ImVec2& v, float s) {
                 return ImVec2(v.x * s, v.y * s);
             };
@@ -474,11 +475,11 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
             // triangle (s1 .. tip). Shared segment boundaries leave no gaps,
             // nothing overhangs past `back`, and the nib tapers from the
             // shaft's own width (no flare).
-            const ImVec2 tip = add(pc, mul(ax, half));           // nib point
-            const ImVec2 back = sub(pc, mul(ax, half));          // eraser end
-            const ImVec2 e1 = add(back, mul(ax, 2.6f * scale));  // eraser/ferrule
-            const ImVec2 f1 = add(back, mul(ax, 4.2f * scale));  // ferrule/shaft
-            const ImVec2 s1 = sub(tip, mul(ax, 4.5f * scale));   // shaft/nib
+            const ImVec2 tip = add(pc, mul(ax, half));            // nib point
+            const ImVec2 back = sub(pc, mul(ax, half));           // eraser end
+            const ImVec2 e1 = add(back, mul(ax, 1.55f * scale));  // eraser/ferrule
+            const ImVec2 f1 = add(back, mul(ax, 2.5f * scale));   // ferrule/shaft
+            const ImVec2 s1 = sub(tip, mul(ax, 2.7f * scale));    // shaft/nib
             const float hw_back = hw * 1.15f;  // eraser + ferrule sit wider
             // Eraser: small block at the very back, lighter tone.
             card_list->AddQuadFilled(add(back, mul(nm, hw_back)),
@@ -545,12 +546,41 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
         }
     }
 
+    // Delete (trash) button hover test — computed here, BEFORE the card
+    // select/double-click block below, and folded into widget_hovered so a
+    // press on the trash's inner half (which overlaps the card's hover rect;
+    // the circle is centred on pos.x, straddling the left border) never also
+    // selects the card, and a double-click on it never falls through to emit
+    // Connect. Only the hover test moves up; the click and the drawing stay
+    // below, after the card border AddRect.
+    const bool renaming = state->renaming == host.address;
+    const float trash_r = kTrashBtnSize * 0.5f * scale;
+    const ImVec2 trash_c(pos.x, pos.y + h * 0.5f);
+    const ImVec2 trash_min(trash_c.x - trash_r, trash_c.y - trash_r);
+    const ImVec2 trash_max(trash_c.x + trash_r, trash_c.y + trash_r);
+    // The card is a child window and the button's inner half overlaps it;
+    // ImGui gives the child hover priority over the parent, so an
+    // InvisibleButton/DrawButton here would be dead over that half. A
+    // manual rect hit test against the mouse position sidesteps that, but
+    // (unlike an ImGui item) has no window-occlusion check of its own, so
+    // overlays that can sit above this button must mask it explicitly. The
+    // in-scene pairing PIN panel draws over the cards and consumes no input
+    // of its own, so it must be masked here too.
+    const bool trash_blocked = !state->delete_modal_address.empty() ||
+                               state->pair_modal_open || state->settings_open ||
+                               in.pairing_show_pin;
+    const bool trash_hovered = renaming && !trash_blocked &&
+                               ImGui::IsMouseHoveringRect(trash_min, trash_max, false);
+    widget_hovered |= trash_hovered;
+
     // Card click: single click selects, double-click on a paired card connects.
     // A click on one of the card's interactive widgets never selects; a busy
     // session never connects (a second connect would silently no-op).
     if (hovered && !widget_hovered) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             state->selected = host.address;
+            // PLAN.md D10(e): a fresh click re-arms the selected-card backdrop.
+            state->backdrop_selection_muted = false;
         }
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && host.paired &&
             !in.session_busy) {
@@ -567,6 +597,74 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     ImGui::GetWindowDrawList()->AddRect(
         pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(Rgba(border)), 0.0f,
         0, 1.0f * scale);
+
+    // Delete (trash) button: only while this card is being renamed. Straddles
+    // the card's left border, vertically centered (handoff README §1:
+    // left:-16px; top:50%). Drawn on the parent draw list, after the card's
+    // child window and border, so nothing clips it. The hover test (renaming,
+    // trash_r/trash_c/trash_min/trash_max/trash_blocked/trash_hovered) is
+    // computed above, before the card select/double-click block — only the
+    // click and the drawing happen here.
+    if (renaming) {
+        // PRESS phase, not click/release: the rename InputText (below)
+        // deactivates on this same press, and its deactivated branch clears
+        // state->renaming later this frame — reading the press here registers
+        // the delete intent before rename mode closes.
+        if (trash_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            state->delete_modal_address = host.address;
+            state->delete_modal_frame = ImGui::GetFrameCount();
+        }
+        // Fill: kMuted idle, kRed on hover. The hover tone intentionally
+        // departs from the design's #6d759e in favour of the danger red, for
+        // destructive affordance; the glyph itself stays kText in both states.
+        const uint32_t trash_fill = trash_hovered ? kRed : kMuted;
+        ImDrawList* trash_list = ImGui::GetWindowDrawList();
+        trash_list->AddCircleFilled(trash_c, trash_r,
+                                    ImGui::GetColorU32(Rgba(trash_fill)));
+        const ImU32 trash_glyph_col = ImGui::GetColorU32(Rgba(kText));
+        const ImU32 trash_cutout_col = ImGui::GetColorU32(Rgba(trash_fill));
+        const float cx = trash_c.x;
+        const float cy = trash_c.y;
+        // Trash glyph, drawn as ImDrawList primitives in the style of the
+        // pencil block above (ImVec2 operators are disabled in this build, so
+        // all math is explicit .x/.y), relative to the circle centre (cx,cy).
+        // Handle.
+        const float handle_hw = 2.5f * scale;   // half of width 5
+        const float handle_hh = 0.8f * scale;   // half of height 1.6
+        const float handle_cy = cy - 6.6f * scale;
+        trash_list->AddRectFilled(ImVec2(cx - handle_hw, handle_cy - handle_hh),
+                                  ImVec2(cx + handle_hw, handle_cy + handle_hh),
+                                  trash_glyph_col);
+        // Lid bar.
+        const float lid_hw = 6.5f * scale;  // half of width 13
+        const float lid_hh = 0.9f * scale;  // half of height 1.8
+        const float lid_cy = cy - 4.5f * scale;
+        trash_list->AddRectFilled(ImVec2(cx - lid_hw, lid_cy - lid_hh),
+                                  ImVec2(cx + lid_hw, lid_cy + lid_hh),
+                                  trash_glyph_col);
+        // Body: trapezoid tapering from the lid (width 11) to the base (width 8.4).
+        const float body_top_hw = 5.5f * scale;
+        const float body_top_y = cy - 3.4f * scale;
+        const float body_bottom_hw = 4.2f * scale;
+        const float body_bottom_y = cy + 6.6f * scale;
+        trash_list->AddQuadFilled(ImVec2(cx - body_top_hw, body_top_y),
+                                  ImVec2(cx + body_top_hw, body_top_y),
+                                  ImVec2(cx + body_bottom_hw, body_bottom_y),
+                                  ImVec2(cx - body_bottom_hw, body_bottom_y),
+                                  trash_glyph_col);
+        // Two slots, punched out of the body in the circle's own fill color
+        // so they read as cut-outs.
+        const float slot_hw = 0.6f * scale;  // half of width 1.2
+        const float slot_top = cy - 1.2f * scale;
+        const float slot_bottom = cy + 4.4f * scale;
+        const float slot_dx = 2.2f * scale;
+        trash_list->AddRectFilled(ImVec2(cx - slot_dx - slot_hw, slot_top),
+                                  ImVec2(cx - slot_dx + slot_hw, slot_bottom),
+                                  trash_cutout_col);
+        trash_list->AddRectFilled(ImVec2(cx + slot_dx - slot_hw, slot_top),
+                                  ImVec2(cx + slot_dx + slot_hw, slot_bottom),
+                                  trash_cutout_col);
+    }
 
     // Border-tab title: drawn after the child so the kBg tab covers the border
     // at the top edge (the tab sits ON the border per the design).
@@ -587,7 +685,6 @@ BridgeAction DrawMachineCard(const BridgeInput& in, BridgeState* state,
     // loss saves, Esc cancels.
     ImGui::PushFont(cosmic::ui::FontMonoBold());
     ImGui::SetWindowFontScale(11.0f / 13.0f);
-    const bool renaming = state->renaming == host.address;
     const float name_max_w = 0.62f * w - 14.0f * scale - 7.0f * scale - 6.0f * scale;
     const std::string name = host.nickname.empty() ? host.address : host.nickname;
     const std::string name_ell = Ellipsize(name, 0.08f, name_max_w);
@@ -923,6 +1020,12 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
     const cosmic::ui::scene::CursorSmooth cursor = cosmic::ui::scene::smoothed_cursor();
     const int64_t now_unix = static_cast<int64_t>(std::time(nullptr));
 
+    // PLAN.md D10(e): the scene backdrop is the focused host's cached
+    // wallpaper. "" / 0 = no backdrop; filled below when a card is hovered
+    // (or, absent that, the selected card) and left untouched otherwise.
+    std::string backdrop_address;
+    float backdrop_weight = 0.0f;
+
     if (in.hosts.empty()) {
         // Empty state: a single beacon card at 8%/30% when there are no hosts.
         result.action = DrawEmptyCard(in, state, vp_size, scale);
@@ -1016,15 +1119,30 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
                 ImVec2(center.x + cw * 0.5f, center.y + ch * 0.5f), true);
             cur += ((hovered ? 1.08f : 1.0f) - cur) * k;
             const float scale_factor = cur;
+            // PLAN.md D10(e): the first hovered card this frame wins the
+            // backdrop; its weight ramps in with the card's own hover scale
+            // (cur eases toward 1.08 above). On unhover this branch is
+            // skipped and the weight steps to the fallback instead of
+            // decaying — the scene eases backdrop_alpha itself (~250ms, W3
+            // item 2), so the step is not visible.
+            if (hovered && backdrop_address.empty()) {
+                backdrop_address = host.address;
+                backdrop_weight = std::clamp((cur - 1.0f) / 0.08f, 0.0f, 1.0f);
+            }
 
             // Depth-of-field far-card fade (polish pass 2): cards far from the
             // cursor dim toward the design's brightness falloff. Blur itself is
-            // not possible in ImGui, so it is approximated with opacity.
+            // not possible in ImGui, so it is approximated with opacity. The
+            // selected card is exempt because it holds the wallpaper focus
+            // (PLAN.md D10(e)) and must not read as unselected when the cursor
+            // moves away.
             const float dist = std::hypot(mouse.x - center.x, mouse.y - center.y);
             const float dist_px = std::isfinite(dist) ? dist / scale : 0.0f;
             const float blur = std::min(
                 1.4f, std::max(0.0f, (dist_px - 240.0f) / 500.0f) * 1.4f);
-            const float fade = 1.0f - 0.30f * (blur / 1.4f);
+            const float fade = state->selected == host.address
+                                    ? 1.0f
+                                    : 1.0f - 0.30f * (blur / 1.4f);
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
             const BridgeAction card_action =
                 DrawMachineCard(in, state, host, static_cast<int>(i), center,
@@ -1032,6 +1150,21 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
             ImGui::PopStyleVar();
             if (result.action.kind == BridgeAction::None) {
                 result.action = card_action;
+            }
+        }
+
+        // PLAN.md D10(e): no card hovered this frame — fall back to the
+        // selected card (if it still names a known host) at a steady weight,
+        // unless a just-ended stream muted it (the click that launched the
+        // stream must not leave the backdrop on forever).
+        if (backdrop_address.empty() && !state->selected.empty() &&
+            !state->backdrop_selection_muted) {
+            for (const SavedHost& host : in.hosts) {
+                if (host.address == state->selected) {
+                    backdrop_address = state->selected;
+                    backdrop_weight = 0.6f;
+                    break;
+                }
             }
         }
     }
@@ -1075,6 +1208,17 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
         }
     }
 
+    // Delete-confirmation modal (handoff README §4): drawn last, after the
+    // Pair modal, so its scrim covers everything above it, including the
+    // Pair modal itself.
+    if (!state->delete_modal_address.empty()) {
+        BridgeAction modal_action;
+        draw_delete_modal(in, state, &modal_action);
+        if (result.action.kind == BridgeAction::None) {
+            result.action = modal_action;
+        }
+    }
+
     ImGui::End();
     ImGui::PopStyleColor();
 
@@ -1086,6 +1230,11 @@ BridgeDrawResult draw_bridge(const BridgeInput& in, BridgeState* state) {
             std::clamp((kLogoHoldS + kLogoFadeS - t) / kLogoFadeS, 0.0, 1.0));
     }
     result.screen_logo_alpha = screen_logo_alpha;
+
+    // PLAN.md D10(e): the backdrop fades with the rest of the chrome while
+    // pairing (see the 0.25 fade above); the address itself is unaffected.
+    result.backdrop_address = std::move(backdrop_address);
+    result.backdrop_weight = pairing ? backdrop_weight * 0.25f : backdrop_weight;
     return result;
 }
 
