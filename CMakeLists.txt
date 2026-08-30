@@ -108,12 +108,14 @@ add_executable(cosmicdesk
     src/app/presence.cpp
     src/app/settings.cpp
     src/app/wallcache.cpp
+    src/app/clipsync.cpp
     src/app/service_ctrl.cpp
     src/app/single_instance.cpp
     src/hostglue/host.cpp
     src/hostglue/pin_bridge.cpp
     src/hostglue/displays.cpp
     src/hostglue/wallpaper.cpp
+    src/hostglue/clipboard.cpp
     src/ui/pin_dialog.cpp
     src/ui/scale.cpp
     src/ui/theme.cpp

@@ -12,7 +12,7 @@ already using these ports on the same machine.
 
 | Offset | Default | Proto | Purpose |
 |---|---|---|---|
-| −5 | 47984 | TCP/HTTPS | Pairing completion, authenticated API (applist, launch, resume, cancel, wallpaper) |
+| −5 | 47984 | TCP/HTTPS | Pairing completion, authenticated API (applist, launch, resume, cancel, wallpaper, clipboard) |
 | 0 | 47989 | TCP/HTTP | `serverinfo`, pairing phases 1–4 |
 | +9 | 47998 | UDP | Video RTP |
 | +10 | 47999 | UDP | Control / input (ENet, encrypted) |
@@ -54,7 +54,8 @@ response:
 ```
 
 - `active="1"` marks the display currently being captured.
-- Version 2 adds `<CosmicWallpaperHash>`, described in the next section.
+- Version 2 adds `<CosmicWallpaperHash>`, described in the next section; version 3 adds
+  the clipboard-sync routes described further below.
 - Stock Moonlight clients ignore unknown XML elements, so a stock client still pairs and
   streams against a Cosmic Desk host.
 - When the elements are absent (i.e. the host is stock Sunshine), the viewer falls back
@@ -93,6 +94,74 @@ from the cached hash triggers exactly one download, cached at
 
 Stock Moonlight clients ignore the unknown elements and still pair and stream; against a
 stock Sunshine host the hash is simply absent, so the client shows no wallpaper.
+
+(The `<CosmicVersion>2</CosmicVersion>` shown above is the version wallpaper sync itself
+requires; the clipboard-sync extension below bumps the live value to `3`. The example is
+unchanged because wallpaper sync's own contract still only needs version 2.)
+
+## Cosmic extension: clipboard sync
+
+The viewer and host share the text clipboard while a stream is running, in both
+directions. `/serverinfo` bumps to:
+
+```xml
+<CosmicVersion>3</CosmicVersion>
+```
+
+Version 3 is what adds the two routes below; nothing else about `/serverinfo` changes.
+
+Both routes live **only on the client-certificate-authenticated HTTPS port**
+(`port_base − 5`, default 47984), like `/cosmic/wallpaper` above — there is no plain-HTTP
+equivalent. Both GET success statuses (200 and 204) also carry
+`X-Cosmic-Clipboard-Seq: <seq>`; the 404 carries no header:
+
+| Route | Condition | Status | Response |
+|---|---|---|---|
+| `GET /cosmic/clipboard?since=<seq>` | sharing on, stream active, seq > `since` | 200 | clipboard text body |
+| `GET /cosmic/clipboard?since=<seq>` | sharing on, stream active, unchanged | 204 | no body |
+| `GET /cosmic/clipboard?since=<seq>` | sharing off, or no stream active | 404 | no header |
+| `POST /cosmic/clipboard` | sharing on, stream active, body ≤ 1 MiB | 200 | — |
+| `POST /cosmic/clipboard` | sharing off, or no stream active | 404 | — |
+| `POST /cosmic/clipboard` | body > 1 MiB | 413 | rejected, never truncated |
+
+- Sequence numbers are a monotonically increasing `uint64` per host clipboard store,
+  starting at 1; the client starts at `since=0`. Republishing identical text does not
+  bump the sequence. The same 1 MiB cap applies host-side: an oversized local clipboard
+  change is simply not published, and the sequence does not advance.
+- The counter is process-local and resets to 0 when the host process restarts, so a
+  client cursor can end up *ahead* of the store. The GET handler treats a `since` value
+  greater than the current sequence as stale and serves the current text rather than
+  answering 204 forever; when the store has never been written, the 204 simply reports
+  sequence 0 and the client resets its cursor from the header.
+- Text only: no file transfer, no images, no paste-as-typing.
+- A single `share_clipboard` setting in `cosmic.json` (default on, exposed in the Bridge
+  settings panel as "Share clipboard") governs **both** directions; turning it off makes
+  both routes answer 404.
+
+Sync is active **only while a streaming session is running** — outside a session both
+routes answer 404. The gate is "is any stream currently active on this host", not "is
+the requesting client the one streaming": the vendored `rtsp_stream` (`host/sunshine/src/rtsp.h:56`)
+exposes only a session count, with no public mapping from an active session back to a
+client certificate. This is a known limitation, stated plainly rather than buried: any
+*paired* client can read or write the clipboard while some other paired client is
+streaming. It does not go further than that — an unpaired client cannot reach these
+routes at all, because the HTTPS server's certificate-verification hook rejects it before
+either handler runs.
+
+On the client, while streaming, the viewer polls the GET route roughly once a second
+with the last sequence it saw, and POSTs when the local clipboard changes. The client
+requires the `X-Cosmic-Clipboard-Seq` response header before trusting a 200 body: an
+unauthorized or stock Sunshine host answers 200 with a Sunshine-style error XML body
+(401 for an unauthorized client, 404 from a stock host), so the status code alone proves
+nothing. This is the same defensive lesson as the wallpaper fetch's magic-byte check
+above.
+
+Each poll opens a fresh HTTPS connection rather than reusing one, so an active stream
+costs roughly one connection (and TLS handshake) per second. This is an accepted v1
+cost, not an oversight; a long-poll variant is the intended future fix.
+
+Stock Moonlight clients simply never call these routes; against a stock Sunshine host the
+routes 404 and the client syncs nothing. Neither case affects pairing or streaming.
 
 ## Cosmic convention: mid-stream monitor switching
 

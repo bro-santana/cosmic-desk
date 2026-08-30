@@ -202,6 +202,7 @@ Settings Settings::load() {
     settings.bitrate_kbps = json_int(json, "bitrate_kbps", settings.bitrate_kbps);
     settings.autostart = json_bool(json, "autostart", settings.autostart);
     settings.share_wallpaper = json_bool(json, "share_wallpaper", settings.share_wallpaper);
+    settings.share_clipboard = json_bool(json, "share_clipboard", settings.share_clipboard);
 
     // hosts is read by hand with contains()/is_*() guards: json.value() throws
     // nlohmann::type_error when a key exists with the wrong type, even on a
@@ -266,6 +267,7 @@ Settings::Settings(Settings&& other) noexcept
       bitrate_kbps(other.bitrate_kbps),
       autostart(other.autostart),
       share_wallpaper(other.share_wallpaper),
+      share_clipboard(other.share_clipboard),
       hosts(std::move(other.hosts)) {}
 
 void Settings::add_or_update_host(const std::string& address, bool paired) {
@@ -399,6 +401,7 @@ bool Settings::save() const {
         {"bitrate_kbps", bitrate_kbps},
         {"autostart", autostart},
         {"share_wallpaper", share_wallpaper},
+        {"share_clipboard", share_clipboard},
         {"hosts", hosts_json},
     };
 

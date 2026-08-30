@@ -5,12 +5,14 @@
 // threads (M1) and the viewer session (M2) plug into this loop later.
 
 #include "app/autostart.h"
+#include "app/clipsync.h"
 #include "app/presence.h"
 #include "app/settings.h"
 #include "app/service_ctrl.h"
 #include "app/single_instance.h"
 #include "app/state.h"
 #include "app/wallcache.h"
+#include "hostglue/clipboard.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
 #include "hostglue/wallpaper.h"
@@ -119,6 +121,18 @@ void apply_input_grab(SDL_Window* window, bool grabbed) {
 #ifdef _WIN32
     SDL_SetHint(SDL_HINT_WINDOWS_CLOSE_ON_ALT_F4, grabbed ? "0" : "1");
 #endif
+}
+
+// 64-bit FNV-1a. Not cryptographic — just a fingerprint of clipboard text used
+// to detect changes cheaply (see the clipboard-sync state below), same
+// algorithm as wallcache.cpp's Fnv1a32 with 64-bit constants.
+uint64_t Fnv1a64(const std::string& s) {
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (unsigned char c : s) {
+        hash ^= c;
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
 }
 
 // Leaves the Viewing UI (plan M4.3): flush held input, release the keyboard
@@ -401,6 +415,14 @@ int main(int argc, char** argv) {
 
     g_session = std::make_unique<cosmic::viewer::Session>(settings);
 
+    // Seed the clipboard-enabled mirror before starting the host: start()
+    // below also does this (host.cpp), but it can return early (e.g. a
+    // host.conf write failure) before reaching that line, and the app keeps
+    // running in that case (see hosting_ok below) -- the viewer role must
+    // still honour the user's share_clipboard opt-out on that path. Setting
+    // it here too is idempotent with the one inside start().
+    cosmic::clipboard::set_enabled(settings.share_clipboard);
+
     const bool hosting_ok = cosmic::hostglue::start(settings);
     if (!hosting_ok) {
         // Hosting is degraded but the app keeps running (plan M1.4): the UI and
@@ -525,6 +547,22 @@ int main(int argc, char** argv) {
     bool show_pin_dialog = false;
     bool pin_result_ok = false;
 
+    // Clipboard sync (host->clipboard.h and viewer->clipsync.h, wired below):
+    // hash of the text this machine's clipboard is last known to hold (0 =
+    // none) -- updated both when we publish a local copy and when we apply an
+    // incoming one, so it always reflects the current clipboard content
+    // regardless of which side changed it. An SDL_EVENT_CLIPBOARD_UPDATE
+    // whose text still matches this hash is an echo (of our own write or of a
+    // copy we already published) and is not re-published.
+    uint64_t clipboard_applied_hash = 0;
+    // Tracks whether the clipsync worker is running so start/stop is driven
+    // by the session state (Streaming) exactly once per transition.
+    bool clipsync_running = false;
+#ifdef _WIN32
+    // Last-seen Windows clipboard sequence number (see the poll below).
+    DWORD last_clip_seq = 0;
+#endif
+
     while (running) {
         SDL_Event event;
         // Set by the Ctrl+Alt+Shift+Q/Enter/Z escape combos while streaming;
@@ -542,7 +580,74 @@ int main(int argc, char** argv) {
         // Read before NewFrame(): the open-popup stack persists across frames.
         const bool imgui_popup_open = ImGui::IsPopupOpen(
             "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+#ifdef _WIN32
+        // SDL3's Windows backend only checks GetClipboardSequenceNumber on
+        // focus gain (WIN_UpdateFocus -> WIN_CheckClipboardUpdate); it uses no
+        // clipboard-format listener, so a tray-hidden/service-mode window never
+        // sees external copies. Poll the sequence each tick and push the same
+        // SDL event so the SDL_EVENT_CLIPBOARD_UPDATE handler below stays the
+        // single code path (its hash echo-suppression absorbs duplicates from
+        // SDL's own focus-gain and self-set events).
+        {
+            const DWORD clip_seq = GetClipboardSequenceNumber();
+            if (clip_seq != 0 && clip_seq != last_clip_seq) {
+                if (last_clip_seq != 0) {
+                    SDL_Event clip_ev{};
+                    clip_ev.type = SDL_EVENT_CLIPBOARD_UPDATE;
+                    SDL_PushEvent(&clip_ev);
+                }
+                last_clip_seq = clip_seq;
+            }
+        }
+#endif
         while (SDL_PollEvent(&event)) {
+            // Clipboard-out: placed first for clarity, ahead of the viewer
+            // input-forwarding block below -- ordering is not load-bearing
+            // here, since cosmic::viewer::input::handle_event does not
+            // consume SDL_EVENT_CLIPBOARD_UPDATE (see viewer/input.cpp's
+            // default case). SDL clipboard calls only ever happen here, on
+            // the main thread.
+            if (event.type == SDL_EVENT_CLIPBOARD_UPDATE) {
+                // Check the length before materialising the string:
+                // SDL_GetClipboardText does a full UTF-16->UTF-8 conversion,
+                // and copying that into a std::string is a second full copy
+                // -- for a clipboard payload over kMaxBytes, doing that
+                // unconditionally would stall the main loop just to discard
+                // the result. SDL_free runs on every path regardless.
+                char* clip = SDL_GetClipboardText();
+                std::string text;
+                if (clip != nullptr && clip[0] != '\0' &&
+                    SDL_strlen(clip) <= cosmic::clipboard::kMaxBytes) {
+                    text.assign(clip);
+                }
+                SDL_free(clip);
+                if (!text.empty()) {
+                    const uint64_t hash = Fnv1a64(text);
+                    if (hash != clipboard_applied_hash) {
+                        // Record this as the clipboard's current content
+                        // before publishing, so a genuinely new local copy is
+                        // never mistaken for an echo of stale remote text
+                        // (the bug this fixes: without this line, copying
+                        // back to a value applied from the peer even one step
+                        // earlier would be silently swallowed).
+                        clipboard_applied_hash = hash;
+                        // Publishing to the host bridge is unconditional by
+                        // design: the /cosmic/clipboard route owns the
+                        // enable/session gate (see clipboard.h), not this
+                        // call site.
+                        cosmic::clipboard::publish(text);
+                        // clipsync has no route of its own to gate it, unlike
+                        // the host bridge above: cosmic::clipboard::enabled()
+                        // is the live mirror of settings.share_clipboard and
+                        // is the single per-machine toggle that deliberately
+                        // governs both the host role and this viewer role, so
+                        // gate the POST here.
+                        if (cosmic::clipboard::enabled()) {
+                            cosmic::clipsync::publish_local(text);
+                        }
+                    }
+                }
+            }
             // While streaming, forward input to the host before ImGui sees it
             // (plan M2.6). Consumed events never reach ImGui; the top bar keeps
             // working because ImGui claims mouse capture when the cursor is
@@ -647,10 +752,108 @@ int main(int argc, char** argv) {
             SDL_RaiseWindow(window);
         }
 
+        // Clipboard-in: drain both inbound paths every frame regardless of
+        // which one is realistically active on this machine (viewing ->
+        // clipsync from the host; hosting -> clipboard.h from a connected
+        // client) so neither buffer is left to stagnate. At most one clipboard
+        // write happens per frame: the last non-empty enabled result wins.
+        {
+            // cosmic::clipboard::enabled() is the live mirror of
+            // settings.share_clipboard and is the single per-machine toggle
+            // that deliberately governs both the host role and the viewer
+            // role -- so a drained value is discarded, not applied, while
+            // sharing is off.
+            const bool sharing_enabled = cosmic::clipboard::enabled();
+            std::string incoming;
+            bool have_incoming = false;
+            std::string from_host;
+            if (cosmic::clipsync::take_incoming(from_host) && sharing_enabled &&
+                !from_host.empty()) {
+                incoming = std::move(from_host);
+                have_incoming = true;
+            }
+            // The POST route already refuses to fill this buffer while
+            // disabled, but gate defensively here too: a toggle flip between
+            // the POST and this drain would otherwise let one stale value
+            // through. Drained unconditionally either way so it cannot
+            // stagnate. Also requires non-empty: a paired client can POST an
+            // empty body (host/sunshine's route only checks the upper
+            // bound), and an empty from_client here must not overwrite a
+            // valid from_host value already drained above -- once drained,
+            // the worker's slot is gone and the value would be lost for good.
+            std::string from_client;
+            if (cosmic::clipboard::take_incoming(from_client) && sharing_enabled &&
+                !from_client.empty()) {
+                incoming = std::move(from_client);
+                have_incoming = true;
+            }
+            if (have_incoming && !incoming.empty()) {
+                // SDL_SetClipboardText takes a C string, so an embedded NUL
+                // would truncate what it actually writes. Truncate here,
+                // before hashing, so the hash describes what the clipboard
+                // will really hold -- hashing the untruncated text would
+                // make the synchronous echo (see below) look like a fresh
+                // local copy instead of this write, and the truncated text
+                // would be re-published to the peer, overwriting its
+                // clipboard.
+                if (auto n = incoming.find('\0'); n != std::string::npos) {
+                    incoming.resize(n);
+                }
+                const uint64_t hash = Fnv1a64(incoming);
+                if (hash != clipboard_applied_hash) {
+                    // Store the hash BEFORE writing the clipboard, updating
+                    // the same "clipboard's last known content" record the
+                    // out-handler above maintains: SDL_SetClipboardText can
+                    // synchronously post SDL_EVENT_CLIPBOARD_UPDATE, and that
+                    // handler compares against this hash to recognize its own
+                    // echo and suppress it. Storing after would let the echo
+                    // through and bounce the text straight back to the peer.
+                    const uint64_t prev_hash = clipboard_applied_hash;
+                    clipboard_applied_hash = hash;
+                    if (!SDL_SetClipboardText(incoming.c_str())) {
+                        // Write failed (e.g. another process holds the
+                        // clipboard open): the value is already drained and
+                        // gone, but the hash must not claim the clipboard
+                        // holds it, or a later resend of the same text would
+                        // be suppressed as an echo.
+                        clipboard_applied_hash = prev_hash;
+                    }
+                }
+            }
+        }
+
         // Drive the window mode from the viewer session (plan M2): while
         // streaming, the window shows the viewer placeholder instead of the
         // main UI. Hiding to the tray still wins so tray behavior is kept.
         cosmic::viewer::SessionStatus session_status = g_session->status();
+        // Clipsync lifecycle: driven by the session state directly rather
+        // than the AppMode::Viewing transition, which is a deliberate
+        // deviation from mirroring share_wallpaper's mode-based seam --
+        // AppMode::Viewing only becomes true once the warp finishes and is
+        // also left early when hiding to the tray mid-stream (see the
+        // close_requested handling above), so a state-machine flag is the one
+        // piece of code that covers every path in and out of Streaming.
+        // Also gated on cosmic::clipboard::enabled(): it is the live mirror
+        // of settings.share_clipboard and, per the single-toggle contract,
+        // deliberately governs the viewer role here as well as the host
+        // role inside the /cosmic/clipboard routes -- so the worker neither
+        // starts nor keeps running (issuing a poll every second) while
+        // sharing is off, and starts/stops live as the user flips the
+        // toggle mid-session.
+        const bool clipboard_sharing_enabled = cosmic::clipboard::enabled();
+        if (session_status.state == cosmic::viewer::ViewerState::Streaming &&
+            clipboard_sharing_enabled && !clipsync_running) {
+            const int https_port = session_status.port_used - 5;
+            if (!connecting_address.empty() && https_port > 0) {
+                cosmic::clipsync::start(connecting_address, https_port);
+                clipsync_running = true;
+            }
+        } else if (clipsync_running &&
+                   (session_status.state != cosmic::viewer::ViewerState::Streaming ||
+                    !clipboard_sharing_enabled)) {
+            cosmic::clipsync::stop();
+            clipsync_running = false;
+        }
         // Once the session settles (Idle/Failed), the LINKING... card clears:
         // the connect either finished (Streaming keeps it) or gave up.
         if (session_status.state == cosmic::viewer::ViewerState::Idle ||
@@ -888,6 +1091,7 @@ int main(int argc, char** argv) {
         bridge_input.bitrate_kbps = settings.bitrate_kbps;
         bridge_input.autostart = settings.autostart;
         bridge_input.share_wallpaper = settings.share_wallpaper;
+        bridge_input.share_clipboard = settings.share_clipboard;
         bridge_input.service_mode = service_mode;
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
         bridge_input.time_s = static_cast<double>(SDL_GetTicks()) / 1000.0;
@@ -1110,6 +1314,13 @@ int main(int argc, char** argv) {
             // (PLAN.md D10 / W1.3's "on settings change" seam).
             cosmic::wallpaper::set_enabled(bridge_result.action.on);
         } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetShareClipboard) {
+            settings.share_clipboard = bridge_result.action.on;
+            settings_dirty = true;
+            // Apply immediately so the running host's /cosmic/clipboard route
+            // honors the change without a restart (mirrors SetShareWallpaper).
+            cosmic::clipboard::set_enabled(bridge_result.action.on);
+        } else if (bridge_result.action.kind ==
                    cosmic::ui::bridge::BridgeAction::CloseSettings) {
             bridge_state.settings_open = false;
             // Settings edits save on the close transition (docs/UI_MIGRATION.md
@@ -1148,6 +1359,9 @@ int main(int argc, char** argv) {
     cosmic::hostglue::stop();
     // Stop the presence poller (U6) and join its worker before SDL_Quit.
     cosmic::presence::stop();
+    // Stop the clipsync worker (idempotent; safe if never started) so it
+    // cannot outlive SDL.
+    cosmic::clipsync::stop();
     cosmic::single_instance::release();
     SDL_Quit();
 

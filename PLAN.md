@@ -208,7 +208,7 @@ budgeted there. Escape hatch: restore LizardByte's prebuilt FFmpeg for the host 
   shipped as `packaging/linux/60-cosmicdesk-input.rules`.
 - **Linux capture v1: X11 only** (`x11grab.cpp`). Wayland (portal/PipeWire) and KMS
   are post-v1; on Wayland the host shows a clear "log in with Xorg session" error.
-- **No clipboard/file transfer.**
+- **File transfer: dropped.** Text clipboard sync is in — see `docs/PROTOCOL.md`.
 
 ### D6. Config & state locations
 - Windows: `%APPDATA%\CosmicDesk\`; Linux: `~/.config/cosmicdesk/` (respect

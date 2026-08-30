@@ -3,6 +3,7 @@
 // minus the parts Cosmic Desk replaces (web UI, tray, service, signal handlers).
 
 #include "hostglue/host.h"
+#include "hostglue/clipboard.h"
 #include "hostglue/wallpaper.h"
 
 // Vendored Sunshine headers. Only this TU depends on them; host.h stays
@@ -247,9 +248,11 @@ bool start(const Settings &settings) {
     return false;
   }
 
-  // Must be set before nvhttp's /serverinfo and /cosmic/wallpaper handlers
-  // can be reached, since both consult the wallpaper provider.
+  // Must be set before nvhttp's /serverinfo, /cosmic/wallpaper and
+  // /cosmic/clipboard handlers can be reached, since all three consult the
+  // corresponding provider.
   cosmic::wallpaper::set_enabled(settings.share_wallpaper);
+  cosmic::clipboard::set_enabled(settings.share_clipboard);
 
   mail::man = std::make_shared<safe::mail_raw_t>();
 

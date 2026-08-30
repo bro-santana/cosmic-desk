@@ -43,7 +43,7 @@ constexpr float kSegH = 30.0f;         // segmented resolution buttons
 constexpr float kStepperBtnW = 30.0f;  // -/+ buttons
 constexpr float kStepperH = 32.0f;
 constexpr float kCloseSize = 26.0f;    // X close button
-constexpr float kToggleW = 40.0f;      // toggle rows (autostart, share wallpaper)
+constexpr float kToggleW = 40.0f;      // toggle rows (autostart, share wallpaper, share clipboard)
 constexpr float kToggleH = 20.0f;
 constexpr float kToggleRadius = 12.0f;  // pill corner radius
 constexpr float kKnobR = 7.0f;          // toggle knob radius (14 px diameter)
@@ -314,8 +314,8 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
 
-    // Toggle row height (autostart + share wallpaper): the toggle (20 px) is
-    // taller than the copy (12.5 px).
+    // Toggle row height (autostart + share wallpaper + share clipboard): the
+    // toggle (20 px) is taller than the copy (12.5 px).
     const float copy_h = 12.5f * scale;
     const float toggle_row_h = std::max(kToggleH * scale, copy_h);
 
@@ -328,6 +328,7 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
         label_h + kLabelGap * scale + kStepperH * scale + kSectionGap * scale +
         label_h + kLabelGap * scale + slider_h + kSectionGap * scale +
         toggle_row_h + kSectionGap * scale + toggle_row_h + kSectionGap * scale +
+        toggle_row_h + kSectionGap * scale +
         footnote_h + pad_y;
 
     // Panel background (parent draw list, before the child): rgba(20,23,46,.97)
@@ -530,6 +531,48 @@ void draw_settings_panel(const BridgeInput& in, BridgeState* state, BridgeAction
 
         // Copy, sans 12.5, kTextDim, vertically centered on the toggle.
         const char* copy = "Share wallpaper - let clients show my background";
+        ImGui::PushFont(cosmic::ui::FontSansRegular());
+        ImGui::SetWindowFontScale(12.5f / 13.0f);
+        const ImVec2 copy_size = cosmic::ui::TextSpacedSize(copy, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, Rgba(kTextDim));
+        ImGui::SetCursorScreenPos(ImVec2(toggle_x + kToggleW * scale + 12.0f * scale,
+                                         y + (toggle_row_h - copy_size.y) * 0.5f));
+        cosmic::ui::TextSpaced(copy, 0.0f);
+        ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+    }
+    y += toggle_row_h + kSectionGap * scale;
+
+    // --- SHARE CLIPBOARD ---
+    // No service-mode lock: the clipboard share opt-out is independent of who
+    // started the host, so the row is always interactive (mirrors SHARE
+    // WALLPAPER above).
+    {
+        const bool toggle_on = in.share_clipboard;
+        const float toggle_x = content_x;
+        const float toggle_y = y + (toggle_row_h - kToggleH * scale) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(toggle_x, toggle_y));
+        ImGui::InvisibleButton("##share_clipboard", ImVec2(kToggleW * scale, kToggleH * scale));
+        if (ImGui::IsItemClicked()) {
+            out_action->kind = BridgeAction::SetShareClipboard;
+            out_action->on = !in.share_clipboard;
+        }
+        // Pill: kGreenBtn when on, kPanelInput when off; 14 px knob, rounded 12 px.
+        ImDrawList* child_list = ImGui::GetWindowDrawList();
+        const ImU32 toggle_bg = toggle_on ? ImGui::GetColorU32(Rgba(kGreenBtn))
+                                          : ImGui::GetColorU32(Rgba(kPanelInput));
+        child_list->AddRectFilled(ImVec2(toggle_x, toggle_y),
+                                  ImVec2(toggle_x + kToggleW * scale, toggle_y + kToggleH * scale),
+                                  toggle_bg, kToggleRadius * scale);
+        const float knob_cx = toggle_on ? toggle_x + (kToggleW - 10.0f) * scale
+                                        : toggle_x + 10.0f * scale;
+        child_list->AddCircleFilled(ImVec2(knob_cx, toggle_y + kToggleH * scale * 0.5f),
+                                    kKnobR * scale,
+                                    ImGui::GetColorU32(Rgba(kText)));
+
+        // Copy, sans 12.5, kTextDim, vertically centered on the toggle.
+        const char* copy = "Share clipboard - sync copied text while streaming";
         ImGui::PushFont(cosmic::ui::FontSansRegular());
         ImGui::SetWindowFontScale(12.5f / 13.0f);
         const ImVec2 copy_size = cosmic::ui::TextSpacedSize(copy, 0.0f);

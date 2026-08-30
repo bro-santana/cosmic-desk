@@ -6,6 +6,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <cstdlib>  // COSMIC MODIFICATION: std::strtoull for GET /cosmic/clipboard's "since" query arg.
 #include <filesystem>
 #include <format>
 #include <string>
@@ -48,6 +49,10 @@
 // displays.h: declared in the app's src/ tree, implemented in wallpaper.cpp
 // in the cosmicdesk target.
 #include "hostglue/wallpaper.h"
+// COSMIC MODIFICATION: clipboard text bridge for the GET/POST
+// /cosmic/clipboard routes. Same pattern as wallpaper.h: declared in the
+// app's src/ tree, implemented in clipboard.cpp in the cosmicdesk target.
+#include "hostglue/clipboard.h"
 
 using namespace std::literals;
 
@@ -728,8 +733,9 @@ namespace nvhttp {
     // Stock Moonlight clients ignore unknown nodes. Ordering contract (D3c): these
     // entries are in platf::display_names() order, the same order consumed by
     // apply_shortcut()'s Ctrl+Alt+Shift+F(1+i) handler in input.cpp. Version 2
-    // adds CosmicWallpaperHash (PLAN D10a/b, milestone W1 item 2).
-    tree.put("root.CosmicVersion", 2);
+    // adds CosmicWallpaperHash (PLAN D10a/b, milestone W1 item 2). Version 3
+    // adds the GET/POST /cosmic/clipboard routes.
+    tree.put("root.CosmicVersion", 3);
     pt::ptree displays_tree;
     int index = 0;
     for (const auto &display : cosmic::displays::list_displays()) {
@@ -1158,6 +1164,112 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  // COSMIC MODIFICATION: serve the host's local clipboard text to a
+  // connected client. Like cosmic_wallpaper above, this route only exists on
+  // this, the client-certificate-verified HTTPS server -- never on
+  // http_server -- which is the trust boundary that makes handing out
+  // clipboard contents acceptable at all.
+  //
+  // COSMIC MODIFICATION: the gate below is "any stream session is active"
+  // (rtsp_stream::session_count() > 0), not "the paired client that issued
+  // this request is the one streaming". rtsp_stream (host/sunshine/src/rtsp.h:56)
+  // exposes only a session count and no public mapping from an active
+  // session back to a client certificate, so per-cert matching isn't
+  // available without patching more of the vendored host. The resulting
+  // limitation: any paired client can read/write the clipboard while some
+  // other paired client is streaming.
+  void cosmic_clipboard_get(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    if (!cosmic::clipboard::enabled() || rtsp_stream::session_count() == 0) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    auto since_str = get_arg(args, "since", "0");
+    // std::strtoull never throws and returns 0 when it cannot parse any
+    // leading digits, so a malformed "since" (missing, empty, non-numeric)
+    // simply falls back to 0 rather than taking down the handler.
+    std::uint64_t since = std::strtoull(since_str.c_str(), nullptr, 10);
+
+    std::string text;
+    std::uint64_t seq = 0;
+    bool changed = cosmic::clipboard::fetch(since, text, seq);
+
+    // COSMIC MODIFICATION: cosmic::clipboard's sequence counter is
+    // process-local and resets to 0 across a host restart. A client that
+    // carries a "since" value from before the restart then has since > the
+    // (now lower) current seq, and fetch() -- which only signals "changed"
+    // when out_seq > since -- would otherwise report "no change" forever.
+    // Treat a client cursor ahead of the store as stale rather than
+    // starving it: re-fetch with since=0 to force the current text out,
+    // but only when the store has actually been published to (seq > 0).
+    // An unpublished store (seq == 0) has nothing to serve, so it falls
+    // through to the ordinary 204 path below and the client resets its
+    // cursor from the reported seq of 0.
+    if (!changed && seq < since && seq > 0) {
+      changed = cosmic::clipboard::fetch(0, text, seq);
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("X-Cosmic-Clipboard-Seq", std::to_string(seq));
+
+    if (changed) {
+      headers.emplace("Content-Type", "text/plain; charset=utf-8");
+      // string_view overload writes the content-length header from
+      // text.size() and streams exactly that many bytes, so embedded NUL
+      // bytes in the clipboard text are not truncated (unlike a C-string
+      // based write) -- same reasoning as cosmic_wallpaper's write() above.
+      response->write(SimpleWeb::StatusCode::success_ok, text, headers);
+    } else {
+      // COSMIC MODIFICATION: RFC 7230 section 3.3.2 forbids a Content-Length
+      // header on a 204 response. Simple-Web-Server's write_header()
+      // (server_http.hpp) only skips emitting one when
+      // close_connection_after_response is already true at write() time, so
+      // the flag has to be set here, before write(), rather than by the
+      // unconditional assignment below -- which still covers the 200 path
+      // above, since this branch returns before reaching it.
+      response->close_connection_after_response = true;
+      response->write(SimpleWeb::StatusCode::success_no_content, headers);
+      return;
+    }
+    response->close_connection_after_response = true;
+  }
+
+  // COSMIC MODIFICATION: accept a client's clipboard text and hand it off to
+  // the app main thread via cosmic::clipboard::push_incoming(). Same
+  // trust-boundary argument as cosmic_clipboard_get above. This is also the
+  // first POST route this codebase registers.
+  void cosmic_clipboard_post(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    if (!cosmic::clipboard::enabled() || rtsp_stream::session_count() == 0) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    // COSMIC MODIFICATION: Simple-Web-Server has already buffered the entire
+    // body into request->content by the time this handler runs --
+    // config.max_request_streambuf_size defaults to SIZE_MAX and is
+    // server-wide, so it cannot be tightened for this route alone without
+    // also capping /launch -- so this rejects an oversized body after it has
+    // been buffered rather than before. Acceptable only because the route
+    // sits behind client-certificate verification. Never truncate: reject
+    // outright instead.
+    if (request->content.size() > cosmic::clipboard::kMaxBytes) {
+      response->write(SimpleWeb::StatusCode::client_error_payload_too_large);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    cosmic::clipboard::push_incoming(request->content.string());
+    response->write(SimpleWeb::StatusCode::success_ok);
+    response->close_connection_after_response = true;
+  }
+
   void setup(const std::string &pkey, const std::string &cert) {
     conf_intern.pkey = pkey;
     conf_intern.servercert = cert;
@@ -1269,6 +1381,11 @@ namespace nvhttp {
     https_server.resource["^/appasset$"]["GET"] = appasset;
     // COSMIC MODIFICATION: wallpaper route, HTTPS only (PLAN D10a/b).
     https_server.resource["^/cosmic/wallpaper$"]["GET"] = cosmic_wallpaper;
+    // COSMIC MODIFICATION: clipboard routes, HTTPS only, same trust boundary
+    // as /cosmic/wallpaper above. POST /cosmic/clipboard is the first POST
+    // route this codebase registers on either server.
+    https_server.resource["^/cosmic/clipboard$"]["GET"] = cosmic_clipboard_get;
+    https_server.resource["^/cosmic/clipboard$"]["POST"] = cosmic_clipboard_post;
     https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
       launch(host_audio, resp, req);
     };

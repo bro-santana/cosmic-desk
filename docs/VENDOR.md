@@ -95,6 +95,8 @@ comment):
   (`config.cpp`); `src/hostglue/host.cpp` writes the `port` key from cosmic.json.
 - `pin_bridge` hook in `nvhttp.cpp` `pair()`: pending pairing requests are
   surfaced to Cosmic Desk's native PIN dialog (M1.4).
+- `nvhttp.cpp` gains `GET`/`POST /cosmic/clipboard` on the HTTPS server for
+  bidirectional text clipboard sync, and bumps `CosmicVersion` from 2 to 3.
 - Deleted encoder/capture/gamepad paths with the existing `COSMIC MODIFICATION`
   markers: `cbs` (SPS/VPS injection), AMF, QSV, MediaFoundation, WGC capture
   backend, and ViGEm/inputtino gamepad emulation.

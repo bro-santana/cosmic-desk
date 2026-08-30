@@ -103,6 +103,7 @@ struct BridgeInput {
     int bitrate_kbps = 20000;
     bool autostart = false;
     bool share_wallpaper = true;  // settings.share_wallpaper: host-side opt-out (PLAN.md D10)
+    bool share_clipboard = true;  // settings.share_clipboard: host-side opt-out
     // True when cosmicsvc spawned us (main.cpp --service). The service already
     // starts the host at boot, and autostart.cpp's HKCU Run key would land in
     // the SYSTEM profile's hive rather than the logged-on user's, so the
@@ -131,6 +132,7 @@ struct BridgeAction {
         SetPortBase,
         SetAutostart,
         SetShareWallpaper,
+        SetShareClipboard,
         CloseSettings,
         StartPair,   // address + nickname + port (0 = follow port_base)
         CancelPair,  // stop an in-flight handshake; the modal stays open
@@ -141,7 +143,7 @@ struct BridgeAction {
     cosmic::ResolutionMode resolution = cosmic::ResolutionMode::HostNative;  // SetResolution
     int value = 0;         // SetFps / SetBitrate / SetPortBase
     int port = 0;          // StartPair: 0 = follow port_base
-    bool on = false;       // SetAutostart / SetShareWallpaper
+    bool on = false;       // SetAutostart / SetShareWallpaper / SetShareClipboard
 };
 
 struct BridgeDrawResult {
