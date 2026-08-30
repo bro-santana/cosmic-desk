@@ -6,7 +6,7 @@
 
 #include <cstdio>
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <imgui.h>
 
 namespace cosmic::ui {
@@ -60,13 +60,13 @@ TopBarAction draw_topbar(TopBarState* state, bool fullscreen,
   // the bar alive while it is set is also what lets it be cleared again.
   const bool pinned_open = state->monitor_combo_open;
   if (in_zone || pinned_open) {
-    state->last_motion_time_ms = SDL_GetTicks64();
+    state->last_motion_time_ms = SDL_GetTicks();
     state->visible = true;
   } else {
     state->visible = false;
   }
   if (state->visible && !pinned_open &&
-      SDL_GetTicks64() - state->last_motion_time_ms > kAutoHideMs) {
+      SDL_GetTicks() - state->last_motion_time_ms > kAutoHideMs) {
     state->visible = false;
   }
 

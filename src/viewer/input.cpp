@@ -32,17 +32,17 @@ std::unordered_set<int> g_mouse_buttons_down;
 // Ctrl+Alt+Shift+Q ends the session, +Enter toggles fullscreen, +Z toggles the
 // keyboard grab (moonlight-qt KeyComboQuit / KeyComboToggleFullScreen /
 // KeyComboUngrabInput pattern). Detection matches moonlight-qt's
-// handleKeyEvent(): the combo is checked on keydown via keysym.mod, before any
-// ImGui capture gate. Returns true and sets the matching action when a combo
-// fires; the caller applies the action after the frame.
+// handleKeyEvent(): the combo is checked on keydown from the event's mod
+// field, before any ImGui capture gate. Returns true and sets the matching
+// action when a combo fires; the caller applies the action after the frame.
 bool handle_escape_combo(const SDL_KeyboardEvent& key, InputActions* actions) {
-    if (key.state != SDL_PRESSED || key.repeat ||
-        (key.keysym.mod & KMOD_CTRL) == 0 ||
-        (key.keysym.mod & KMOD_ALT) == 0 ||
-        (key.keysym.mod & KMOD_SHIFT) == 0) {
+    if (!key.down || key.repeat ||
+        (key.mod & SDL_KMOD_CTRL) == 0 ||
+        (key.mod & SDL_KMOD_ALT) == 0 ||
+        (key.mod & SDL_KMOD_SHIFT) == 0) {
         return false;
     }
-    switch (key.keysym.scancode) {
+    switch (key.scancode) {
         case SDL_SCANCODE_Q:
             actions->quit = true;
             return true;
@@ -65,12 +65,12 @@ bool handle_key_event(const SDL_KeyboardEvent& key, bool imgui_wants_kb,
     }
     // Swallow the key-up that follows a combo (the modifiers are still held at
     // that point) so no stray VK_RETURN / VK_Z / VK_Q reaches the host.
-    if ((key.keysym.scancode == SDL_SCANCODE_RETURN ||
-         key.keysym.scancode == SDL_SCANCODE_KP_ENTER ||
-         key.keysym.scancode == SDL_SCANCODE_Z ||
-         key.keysym.scancode == SDL_SCANCODE_Q) &&
-        (key.keysym.mod & KMOD_CTRL) != 0 && (key.keysym.mod & KMOD_ALT) != 0 &&
-        (key.keysym.mod & KMOD_SHIFT) != 0) {
+    if ((key.scancode == SDL_SCANCODE_RETURN ||
+         key.scancode == SDL_SCANCODE_KP_ENTER ||
+         key.scancode == SDL_SCANCODE_Z ||
+         key.scancode == SDL_SCANCODE_Q) &&
+        (key.mod & SDL_KMOD_CTRL) != 0 && (key.mod & SDL_KMOD_ALT) != 0 &&
+        (key.mod & SDL_KMOD_SHIFT) != 0) {
         return true;
     }
     if (imgui_wants_kb) {
@@ -80,12 +80,12 @@ bool handle_key_event(const SDL_KeyboardEvent& key, bool imgui_wants_kb,
         // Ignore repeat key down events (moonlight-qt behavior).
         return true;
     }
-    const std::uint16_t keycode = sdl_scancode_to_vk(key.keysym.scancode);
+    const std::uint16_t keycode = sdl_scancode_to_vk(key.scancode);
     if (keycode != 0) {
         // Track the key state so flush_input_state() can release anything
         // still held when the grab is dropped or focus is lost (moonlight-qt
         // m_KeysDown pattern).
-        if (key.state == SDL_PRESSED) {
+        if (key.down) {
             g_keys_down.insert(keycode);
         } else {
             g_keys_down.erase(keycode);
@@ -94,18 +94,17 @@ bool handle_key_event(const SDL_KeyboardEvent& key, bool imgui_wants_kb,
         // keyboard.cpp:433 (v6.1.0). MODIFIER_META is skipped: the Win key
         // reaches the host as VK_LWIN/VK_RWIN via keymap.cpp.
         char modifiers = 0;
-        if (key.keysym.mod & KMOD_CTRL) {
+        if (key.mod & SDL_KMOD_CTRL) {
             modifiers |= MODIFIER_CTRL;
         }
-        if (key.keysym.mod & KMOD_ALT) {
+        if (key.mod & SDL_KMOD_ALT) {
             modifiers |= MODIFIER_ALT;
         }
-        if (key.keysym.mod & KMOD_SHIFT) {
+        if (key.mod & SDL_KMOD_SHIFT) {
             modifiers |= MODIFIER_SHIFT;
         }
         LiSendKeyboardEvent(static_cast<short>(0x8000 | keycode),
-                            key.state == SDL_PRESSED ? KEY_ACTION_DOWN
-                                                     : KEY_ACTION_UP,
+                            key.down ? KEY_ACTION_DOWN : KEY_ACTION_UP,
                             modifiers);
     }
     return true;
@@ -139,8 +138,10 @@ bool handle_mouse_motion(const SDL_MouseMotionEvent& motion, SDL_Window* window)
     const int vid_h = static_cast<int>(g_stream_height * scale + 0.5f);
     const int vid_x = (area_w - vid_w) / 2;
     const int vid_y = top + (area_h - vid_h) / 2;
-    x = (motion.x - vid_x) * g_stream_width / vid_w;
-    y = (motion.y - vid_y) * g_stream_height / vid_h;
+    // SDL3 reports sub-pixel motion coordinates; truncate to whole window
+    // pixels first so the mapping below stays integer division throughout.
+    x = (static_cast<int>(motion.x) - vid_x) * g_stream_width / vid_w;
+    y = (static_cast<int>(motion.y) - vid_y) * g_stream_height / vid_h;
     x = std::clamp(x, 0, g_stream_width - 1);
     y = std::clamp(y, 0, g_stream_height - 1);
     LiSendMousePositionEvent(static_cast<short>(x), static_cast<short>(y),
@@ -167,20 +168,23 @@ bool handle_mouse_button(const SDL_MouseButtonEvent& button) {
     }
     // Track held buttons so flush_input_state() can release them when the
     // grab is dropped or focus is lost (moonlight-qt raiseAllKeys pattern).
-    if (button.state == SDL_PRESSED) {
+    if (button.down) {
         g_mouse_buttons_down.insert(remote_button);
     } else {
         g_mouse_buttons_down.erase(remote_button);
     }
     LiSendMouseButtonEvent(
-        button.state == SDL_PRESSED ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE,
+        button.down ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE,
         remote_button);
     return true;
 }
 
 bool handle_mouse_wheel(const SDL_MouseWheelEvent& wheel) {
     // LiSendHighResScrollEvent exists in our moonlight-common-c; one wheel
-    // notch is WHEEL_DELTA (120) on the host.
+    // notch is WHEEL_DELTA (120) on the host. wheel.y carries the
+    // high-resolution (fractional) scroll amount, scaled to WHEEL_DELTA
+    // units and truncated toward zero; sub-notch movements below the
+    // truncation threshold forward as zero.
     LiSendHighResScrollEvent(static_cast<short>(wheel.y * 120));
     return true;
 }
@@ -200,21 +204,21 @@ bool handle_event(const SDL_Event& event, SDL_Window* window,
                   bool imgui_wants_kb, bool imgui_wants_mouse,
                   InputActions* actions) {
     switch (event.type) {
-    case SDL_KEYDOWN:
-    case SDL_KEYUP:
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
         return handle_key_event(event.key, imgui_wants_kb, actions);
-    case SDL_MOUSEMOTION:
+    case SDL_EVENT_MOUSE_MOTION:
         if (imgui_wants_mouse) {
             return false;  // Overlay interaction (e.g. hovering the top bar).
         }
         return handle_mouse_motion(event.motion, window);
-    case SDL_MOUSEBUTTONDOWN:
-    case SDL_MOUSEBUTTONUP:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
         if (imgui_wants_mouse) {
             return false;
         }
         return handle_mouse_button(event.button);
-    case SDL_MOUSEWHEEL:
+    case SDL_EVENT_MOUSE_WHEEL:
         if (imgui_wants_mouse) {
             return false;
         }

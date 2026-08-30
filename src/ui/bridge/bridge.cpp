@@ -10,7 +10,7 @@
 
 #include "ui/bridge/bridge.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <imgui.h>
 
 #include <algorithm>

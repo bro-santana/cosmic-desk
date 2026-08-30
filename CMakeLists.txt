@@ -21,7 +21,19 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
-find_package(SDL2 REQUIRED)
+# SDL3: Windows gets it from the MSYS2 system package (mingw-w64-ucrt-x86_64-sdl3);
+# Linux builds the vendored third-party/SDL submodule statically instead, since
+# Ubuntu 24.04 (the Linux baseline per docs/BUILDING.md) ships no libsdl3-dev.
+# This supersedes decision A1 in docs/UI_MIGRATION.md.
+# 3.2 floor: everything the port uses is in SDL3's initial stable ABI, so an
+# older pre-release system SDL3 must fall through to the vendored build.
+find_package(SDL3 3.2 CONFIG QUIET)
+if(NOT SDL3_FOUND)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third-party/SDL)
+endif()
 find_package(nlohmann_json REQUIRED)
 
 add_subdirectory(third-party/imgui)
@@ -86,7 +98,7 @@ target_link_libraries(cosmic_moonlight_common PRIVATE
 
 # ---------------------------------------------------------------------------
 # cosmicdesk: the single unified binary (host role + viewer role + UI).
-# M0 scope: SDL window, ImGui, tray icon, settings file.
+# M0 scope: SDL3 window, ImGui, tray icon, settings file.
 # M1.3: host glue (src/hostglue/host.cpp) boots the vendored host at launch.
 # M2.2: viewer session (src/viewer/session.cpp) + decoder/audio stubs.
 # ---------------------------------------------------------------------------
@@ -136,10 +148,6 @@ target_include_directories(cosmicdesk PRIVATE
 target_compile_features(cosmicdesk PRIVATE cxx_std_23)
 
 if(WIN32)
-    # SDL2main is a static library that calls into SDL2, so it has to be listed
-    # before SDL2 on the link line.
-    target_link_libraries(cosmicdesk PRIVATE SDL2::SDL2main)
-
     # Embed assets/icon.ico as the executable's icon (Explorer/taskbar) instead
     # of the generic one. The .rc is generated so the icon path is absolute —
     # windres resolves relative paths against the build dir, not the source.
@@ -162,7 +170,7 @@ target_link_libraries(cosmicdesk PRIVATE
     cosmic_imgui
     lunasvg::lunasvg
     nlohmann_json::nlohmann_json
-    SDL2::SDL2
+    SDL3::SDL3
 )
 
 if(WIN32)

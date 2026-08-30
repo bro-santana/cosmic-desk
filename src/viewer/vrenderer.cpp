@@ -66,7 +66,9 @@ void vrenderer_render(SDL_Renderer* renderer, AVFrame* frame,
                          frame->linesize[2]);
     SDL_RenderClear(renderer);
     const SDL_Rect dst = fit_rect(video_area, g_stream_width, g_stream_height);
-    SDL_RenderCopy(renderer, g_texture, nullptr, &dst);
+    SDL_FRect fdst;
+    SDL_RectToFRect(&dst, &fdst);
+    SDL_RenderTexture(renderer, g_texture, nullptr, &fdst);
 }
 
 void vrenderer_present_no_frame(SDL_Renderer* renderer,
@@ -82,7 +84,9 @@ void vrenderer_present_no_frame(SDL_Renderer* renderer,
     // free. Before the first frame there is no texture and the black stands.
     if (g_texture != nullptr) {
         const SDL_Rect dst = fit_rect(video_area, g_stream_width, g_stream_height);
-        SDL_RenderCopy(renderer, g_texture, nullptr, &dst);
+        SDL_FRect fdst;
+        SDL_RectToFRect(&dst, &fdst);
+        SDL_RenderTexture(renderer, g_texture, nullptr, &fdst);
     }
 }
 

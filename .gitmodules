@@ -4,3 +4,6 @@
 [submodule "third-party/inputtino"]
 	path = third-party/inputtino
 	url = https://github.com/games-on-whales/inputtino.git
+[submodule "third-party/SDL"]
+	path = third-party/SDL
+	url = https://github.com/libsdl-org/SDL

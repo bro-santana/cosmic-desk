@@ -40,7 +40,7 @@ float topbar_height();
 
 // Auto-hide state, owned by the caller so it survives across frames.
 struct TopBarState {
-  std::uint64_t last_motion_time_ms = 0;  // SDL_GetTicks64() of the last motion
+  std::uint64_t last_motion_time_ms = 0;  // SDL_GetTicks() of the last motion
   bool visible = false;                   // bar is currently drawn
   // COSMIC MODIFICATION (M5): monitor dropdown open state, used to detect the
   // closed->open transition (which triggers a /serverinfo refresh).

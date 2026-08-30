@@ -4,9 +4,9 @@
 #include "ui/fonts.h"
 #include "ui/theme.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <imgui.h>
-#include <imgui_impl_sdlrenderer2.h>
+#include <imgui_impl_sdlrenderer3.h>
 
 #include <cmath>
 #include <cstdio>
@@ -24,37 +24,14 @@ float g_scale = 1.0f;
 
 // Scale of the display `window` currently sits on, as a multiple of 96 DPI.
 float detect_scale(SDL_Window* window) {
-    const int display = SDL_GetWindowDisplayIndex(window);
-    if (display < 0) {
+    // SDL3 is per-monitor-v2 aware on Windows, so this returns the monitor's
+    // effective scale directly — exactly the "Scale" percentage from Display
+    // settings. On X11 it is the desktop's content scale (Xft.dpi), not 1.0;
+    // that divergence is intended.
+    const float scale = SDL_GetWindowDisplayScale(window);
+    if (scale <= 0.0f) {
         return 1.0f;
     }
-
-#ifdef _WIN32
-    // With per-monitor-v2 awareness SDL reports the monitor's effective DPI,
-    // which is exactly the "Scale" percentage from Display settings x 96.
-    float ddpi = 0.0f;
-    if (SDL_GetDisplayDPI(display, &ddpi, nullptr, nullptr) != 0 || ddpi <= 0.0f) {
-        return 1.0f;
-    }
-    const float scale = ddpi / 96.0f;
-#else
-    // X11's SDL_GetDisplayDPI reports the panel's *physical* DPI from EDID,
-    // which says nothing about the desktop's scaling factor and over-scales
-    // badly on large 4K screens. Use the drawable/window ratio instead: it is
-    // the real factor on the backends that have one (Wayland, macOS) and 1.0
-    // on X11, where the toolkit does no scaling of its own.
-    (void)display;
-    int window_w = 0;
-    int window_h = 0;
-    int drawable_w = 0;
-    int drawable_h = 0;
-    SDL_GetWindowSize(window, &window_w, &window_h);
-    SDL_GetRendererOutputSize(SDL_GetRenderer(window), &drawable_w, &drawable_h);
-    if (window_w <= 0 || drawable_w <= 0) {
-        return 1.0f;
-    }
-    const float scale = static_cast<float>(drawable_w) / static_cast<float>(window_w);
-#endif
 
     if (!std::isfinite(scale)) {
         return 1.0f;
@@ -88,9 +65,9 @@ bool apply(SDL_Window* window) {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
     LoadFonts(g_scale);
-    // The SDLRenderer2 backend only rebuilds its font texture when it has
+    // The SDLRenderer3 backend only rebuilds its font texture when it has
     // none, so drop the stale one; the next NewFrame() recreates it.
-    ImGui_ImplSDLRenderer2_DestroyFontsTexture();
+    ImGui_ImplSDLRenderer3_DestroyFontsTexture();
 
     std::printf("[ui] display scale %.2fx\n", g_scale);
     std::fflush(stdout);

@@ -46,7 +46,7 @@
 //   without touching the layer pipeline.
 
 #pragma once
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include <string>
 
@@ -56,7 +56,7 @@ namespace cosmic::ui::scene {
 struct SceneInput {
     float mouse_x = 0.0f;  // mouse in renderer-output pixel coords
     float mouse_y = 0.0f;
-    float time_s = 0.0f;   // SDL_GetTicks64() / 1000.0f
+    float time_s = 0.0f;   // SDL_GetTicks() / 1000.0f
     float motion = 1.0f;   // parallax strength (design "motion" prop)
     // Screen-logo overlay opacity (0..1). U2 drives 1 during boot, fading to 0
     // over the 1.4s after boot completes; U0 had it always-on.
@@ -81,8 +81,8 @@ void shutdown(SDL_Renderer* renderer);
 // in device pixels (per-monitor-v2 DPI awareness). Re-rasterizes all layer
 // textures automatically when the size changed since last frame. Call once
 // per frame between SDL_RenderClear (main.cpp clears to kBg) and
-// ImGui_ImplSDLRenderer2_RenderDrawData — i.e. after the ImGui frame has
-// been built, so the scene lands underneath the UI. The SDLRenderer2 backend
+// ImGui_ImplSDLRenderer3_RenderDrawData — i.e. after the ImGui frame has
+// been built, so the scene lands underneath the UI. The SDLRenderer3 backend
 // re-asserts its own renderer state in RenderDrawData. Does not touch ImGui
 // state.
 void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in);

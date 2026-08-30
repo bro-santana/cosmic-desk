@@ -30,7 +30,7 @@ pacman -S --needed git \
   mingw-w64-ucrt-x86_64-cmake \
   mingw-w64-ucrt-x86_64-ninja \
   mingw-w64-ucrt-x86_64-pkgconf \
-  mingw-w64-ucrt-x86_64-SDL2 \
+  mingw-w64-ucrt-x86_64-sdl3 \
   mingw-w64-ucrt-x86_64-nlohmann-json
 ```
 
@@ -122,9 +122,24 @@ warn until a code-signing certificate is set up.
 ```bash
 sudo apt update && sudo apt install -y \
   build-essential cmake ninja-build git pkg-config \
-  libsdl2-dev nlohmann-json3-dev \
-  libayatana-appindicator3-dev libgtk-3-dev
+  nlohmann-json3-dev \
+  libayatana-appindicator3-dev libgtk-3-dev \
+  libxext-dev libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev \
+  libwayland-dev libdecor-0-dev libpipewire-0.3-dev \
+  libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libgbm-dev \
+  libasound2-dev libdbus-1-dev
 ```
+
+Ubuntu 24.04 ships no `libsdl3-dev`, so no SDL package is installed above; SDL3 is
+instead built from the vendored `third-party/SDL` submodule (pinned per
+`docs/VENDOR.md`), the same fallback the root `CMakeLists.txt` selects when
+`find_package(SDL3 CONFIG)` fails. The packages above are SDL's own build dependencies
+for that static build: `libx*`/`libwayland*`/`libdecor*` cover X11 + Wayland windowing;
+`libgl1-mesa*`/`libegl1-mesa*`/`libgles2-mesa*` cover GL/EGL/GLES rendering for
+SDL_Renderer's accelerated backends; `libgbm-dev` is for SDL's KMSDRM video driver;
+`libasound2-dev`/`libpipewire-0.3-dev` are the ALSA and PipeWire audio backends
+(PulseAudio support instead comes from `libpulse-dev` in the M1 block below); and
+`libdbus-1-dev` is for SDL's screensaver-inhibit and desktop-portal integration.
 
 From M1 onward, also:
 
@@ -252,7 +267,7 @@ Two consequences worth knowing:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Could not find a package configuration file provided by "SDL2"` | Dependencies not installed, or you are in the wrong MSYS2 shell | Use the **UCRT64** shell; re-run the `pacman -S` line |
+| `Could not find a package configuration file provided by "SDL3"` | Dependencies not installed, or you are in the wrong MSYS2 shell | Use the **UCRT64** shell; re-run the `pacman -S` line |
 | `cmake: command not found` in MSYS2 | You installed `cmake` instead of `mingw-w64-ucrt-x86_64-cmake`, or you are in the MSYS shell | Install the ucrt64 package and use the UCRT64 shell |
 | Build succeeds but the app fails to start with a missing DLL | Running the exe outside the MSYS2 environment | Run from the UCRT64 shell, or bundle DLLs (see `packaging/windows/`, milestone M6) |
 | A *bundled* exe fails at startup with a missing-DLL dialog (e.g. `avcodec-62.dll`) | The bundle was made on a machine with an incomplete MSYS2 install | Reinstall the section-3 packages (without `--needed` to restore deleted files), re-run `make-zip.ps1`; the script now fails loudly instead of writing an incomplete bundle |

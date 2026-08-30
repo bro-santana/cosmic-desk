@@ -1,5 +1,5 @@
 // Cosmic Desk — viewer audio renderer (plan M2.5). Opus multistream decode +
-// SDL_QueueAudio (pattern: moonlight-embedded src/audio/sdl.c). The session
+// SDL audio stream (pattern: moonlight-embedded src/audio/sdl.c). The session
 // callbacks in session.cpp call into these functions.
 
 #pragma once

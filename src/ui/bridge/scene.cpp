@@ -1,6 +1,6 @@
 // Cosmic Desk — Bridge scene renderer implementation.
 //
-// Pure SDL2 (no ImGui dependency). Layer SVGs are rasterized into SDL textures
+// Pure SDL3 (no ImGui dependency). Layer SVGs are rasterized into SDL textures
 // with lunasvg on resize; the background gradient and the 44 twinkles are
 // generated procedurally to replicate the prototype exactly.
 
@@ -193,7 +193,7 @@ struct State {
     bool initialized = false;
     int tex_w = 0;   // last rasterized texture size (0 = never)
     int tex_h = 0;
-    uint64_t last_rasterize_ms = 0;  // SDL_GetTicks64() of last rasterize (0 = never)
+    uint64_t last_rasterize_ms = 0;  // SDL_GetTicks() of last rasterize (0 = never)
     SDL_Texture* layers[kLayerCount] = {};
     SDL_Texture* bg = nullptr;
     SDL_Texture* flash = nullptr;  // warp flash (opacity driven by the U5 envelope)
@@ -304,13 +304,12 @@ uint32_t LerpColorAlpha(uint32_t from, uint32_t to, float t) {
 // any failure (after logging); the caller keeps the slot null.
 SDL_Texture* RasterizeLayer(SDL_Renderer* renderer, const Layer& layer, int tex_w,
                             int tex_h) {
-    char* base = SDL_GetBasePath();
+    const char* base = SDL_GetBasePath();
     if (base == nullptr) {
         LogError("SDL_GetBasePath failed");
         return nullptr;
     }
     const std::string path = std::string(base) + "assets/ui/layers/" + layer.name;
-    SDL_free(base);
 
     std::unique_ptr<lunasvg::Document> doc = lunasvg::Document::loadFromFile(path);
     if (!doc) {
@@ -356,7 +355,7 @@ SDL_Texture* RasterizeLayer(SDL_Renderer* renderer, const Layer& layer, int tex_
         std::fprintf(stderr, "[scene] SDL_CreateTexture failed: %s\n", SDL_GetError());
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture failed: %s\n", SDL_GetError());
         SDL_DestroyTexture(tex);
         return nullptr;
@@ -395,7 +394,7 @@ SDL_Texture* BuildBackground(SDL_Renderer* renderer, int tex_w, int tex_h) {
         std::fprintf(stderr, "[scene] SDL_CreateTexture (bg) failed: %s\n", SDL_GetError());
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture (bg) failed: %s\n", SDL_GetError());
         SDL_DestroyTexture(tex);
         return nullptr;
@@ -448,7 +447,7 @@ SDL_Texture* BuildFlash(SDL_Renderer* renderer, int tex_w, int tex_h) {
                      SDL_GetError());
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture (flash) failed: %s\n",
                      SDL_GetError());
         SDL_DestroyTexture(tex);
@@ -498,7 +497,7 @@ SDL_Texture* BuildVignette(SDL_Renderer* renderer, int tex_w, int tex_h) {
                      SDL_GetError());
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels.data(), tex_w * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture (vignette) failed: %s\n",
                      SDL_GetError());
         SDL_DestroyTexture(tex);
@@ -592,7 +591,7 @@ SDL_Texture* LoadBackdropTexture(SDL_Renderer* renderer, const std::string& path
         stbi_image_free(pixels);
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels, w * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels, w * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture (backdrop) failed: %s\n",
                      SDL_GetError());
         SDL_DestroyTexture(tex);
@@ -684,7 +683,9 @@ void DrawBackdropCovered(SDL_Renderer* renderer, const BackdropEntry& e,
     }
     SDL_SetTextureAlphaMod(
         e.tex, static_cast<Uint8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
-    SDL_RenderCopyF(renderer, e.tex, &src, &dst);
+    SDL_FRect fsrc;
+    SDL_RectToFRect(&src, &fsrc);
+    SDL_RenderTexture(renderer, e.tex, &fsrc, &dst);
 }
 
 // Builds the shooting-star streak texture at a fixed 170x2 (the dest rect
@@ -716,7 +717,7 @@ SDL_Texture* BuildStreak(SDL_Renderer* renderer) {
                      SDL_GetError());
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), kStreakW * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels.data(), kStreakW * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture (streak) failed: %s\n",
                      SDL_GetError());
         SDL_DestroyTexture(tex);
@@ -761,7 +762,7 @@ SDL_Texture* BuildGlow(SDL_Renderer* renderer) {
                      SDL_GetError());
         return nullptr;
     }
-    if (SDL_UpdateTexture(tex, nullptr, pixels.data(), kGlowSize * 4) != 0) {
+    if (!SDL_UpdateTexture(tex, nullptr, pixels.data(), kGlowSize * 4)) {
         std::fprintf(stderr, "[scene] SDL_UpdateTexture (glow) failed: %s\n",
                      SDL_GetError());
         SDL_DestroyTexture(tex);
@@ -816,7 +817,9 @@ void AppendDashQuad(float x0, float y0, float x1, float y1, float width,
     const float hw = width * 0.5f;
     const float nx = -dy / len * hw;
     const float ny = dx / len * hw;
-    const SDL_Color col{r, g, b, a};
+    // SDL_Vertex::color is an SDL_FColor (0..1 floats), not the SDL_Color
+    // (0..255 Uint8) the callers pass in, so normalize before packing.
+    const SDL_FColor col{r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f};
     const size_t base = g_dash_verts.size();
     g_dash_verts.push_back(SDL_Vertex{{x0 - nx, y0 - ny}, col, {0.0f, 0.0f}});
     g_dash_verts.push_back(SDL_Vertex{{x0 + nx, y0 + ny}, col, {0.0f, 0.0f}});
@@ -1026,7 +1029,7 @@ void RasterizeAll(SDL_Renderer* renderer, int tex_w, int tex_h) {
     g_state.vignette = BuildVignette(renderer, tex_w, tex_h);
     g_state.tex_w = tex_w;
     g_state.tex_h = tex_h;
-    g_state.last_rasterize_ms = SDL_GetTicks64();
+    g_state.last_rasterize_ms = SDL_GetTicks();
 }
 
 // Parallax strength for the current frame, guarded against non-finite values:
@@ -1165,7 +1168,7 @@ void init(SDL_Renderer* renderer) {
         return;
     }
     // Geometry draws (twinkles) use the blend path; set it once here and again
-    // at the top of draw() because ImGui_ImplSDLRenderer2 resets its own state
+    // at the top of draw() because ImGui_ImplSDLRenderer3 resets its own state
     // each frame.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     BuildTwinkles();
@@ -1234,7 +1237,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         }
     }
 
-    // ImGui_ImplSDLRenderer2 sets its own blend state each frame, so re-assert
+    // ImGui_ImplSDLRenderer3 sets its own blend state each frame, so re-assert
     // ours at the top of every draw. Leaving it set on return is harmless.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
@@ -1314,7 +1317,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     const float art_h = art_w * 1200.0f / 1620.8481f;
     const int tex_w = static_cast<int>(std::ceil(art_w));
     const int tex_h = static_cast<int>(std::ceil(art_h));
-    const uint64_t now_ms = SDL_GetTicks64();
+    const uint64_t now_ms = SDL_GetTicks();
     if ((tex_w != g_state.tex_w || tex_h != g_state.tex_h) &&
         (g_state.last_rasterize_ms == 0 ||
          now_ms - g_state.last_rasterize_ms >= 300)) {
@@ -1323,8 +1326,9 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
 
     // 3. Background radial gradient, full viewport.
     if (g_state.bg != nullptr) {
-        const SDL_Rect dst{0, 0, out_w, out_h};
-        SDL_RenderCopy(renderer, g_state.bg, nullptr, &dst);
+        const SDL_FRect dst{0.0f, 0.0f, static_cast<float>(out_w),
+                            static_cast<float>(out_h)};
+        SDL_RenderTexture(renderer, g_state.bg, nullptr, &dst);
     }
 
     // 4. Backdrop: the focused host's cached wallpaper, cover-scaled and
@@ -1455,7 +1459,8 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         // twinkle pass below sets its own draw color, so nothing to restore.
         const float scrim_alpha = presence * kBackdropScrimAlpha;
         if (scrim_alpha > kBackdropMinAlpha && g_state.backdrop_cur.tex != nullptr) {
-            const SDL_Rect dst{0, 0, out_w, out_h};
+            const SDL_FRect dst{0.0f, 0.0f, static_cast<float>(out_w),
+                                static_cast<float>(out_h)};
             SDL_SetRenderDrawColor(
                 renderer, 0, 0, 0,
                 static_cast<Uint8>(std::clamp(scrim_alpha, 0.0f, 1.0f) * 255.0f));
@@ -1471,11 +1476,14 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
         // Ease-in-out sine matching the CSS twk keyframes (0%/100% .12, 50% .9).
         const float o = 0.12f + 0.78f * (0.5f - 0.5f * std::cos(2.0f * 3.14159265f * phase));
         const float size = t.size * scale;
-        const SDL_Rect rect{
-            static_cast<int>(t.x * out_w),
-            static_cast<int>(t.y * out_h),
-            static_cast<int>(size),
-            static_cast<int>(size),
+        // SDL_RenderFillRect takes an SDL_FRect, but the twinkle must land on the
+        // whole-pixel grid: truncate each component through int first, then widen
+        // back to float.
+        const SDL_FRect rect{
+            static_cast<float>(static_cast<int>(t.x * out_w)),
+            static_cast<float>(static_cast<int>(t.y * out_h)),
+            static_cast<float>(static_cast<int>(size)),
+            static_cast<float>(static_cast<int>(size)),
         };
         SDL_SetRenderDrawColor(renderer, text.r, text.g, text.b,
                                static_cast<Uint8>(o * 255.0f));
@@ -1518,8 +1526,8 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
                     static_cast<Uint8>(std::clamp(opacity, 0.0f, 1.0f) * 255.0f));
                 const SDL_FRect dest{pos_x - sw / 2.0f, pos_y - sh / 2.0f, sw, sh};
                 // -26deg counterclockwise (SDL angles are clockwise-positive).
-                SDL_RenderCopyExF(renderer, g_state.streak, nullptr, &dest, -26.0f,
-                                  nullptr, SDL_FLIP_NONE);
+                SDL_RenderTextureRotated(renderer, g_state.streak, nullptr, &dest,
+                                         -26.0f, nullptr, SDL_FLIP_NONE);
             }
         }
 
@@ -1539,8 +1547,9 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             SDL_SetTextureAlphaMod(
                 g_state.flash,
                 static_cast<Uint8>(std::clamp(flash_alpha, 0.0f, 1.0f) * 255.0f));
-            const SDL_Rect dst{0, 0, out_w, out_h};
-            SDL_RenderCopy(renderer, g_state.flash, nullptr, &dst);
+            const SDL_FRect dst{0.0f, 0.0f, static_cast<float>(out_w),
+                                static_cast<float>(out_h)};
+            SDL_RenderTexture(renderer, g_state.flash, nullptr, &dst);
         }
 
         // The screen glow sits between the desk and the monitor (prototype DOM
@@ -1560,7 +1569,7 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
                 0.34f * desk.w,
                 0.30f * desk.h,
             };
-            SDL_RenderCopyF(renderer, g_state.glow, nullptr, &glow_dest);
+            SDL_RenderTexture(renderer, g_state.glow, nullptr, &glow_dest);
         }
 
         // Panel wallpaper (PLAN.md D10(e)): the same focused-host backdrop
@@ -1718,10 +1727,10 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
             // about P1 moves dest2's top-left by (1-sx)*(P1-dest1), so the
             // center lands at (sx*fx*dest0.w, sy*fy*dest0.h).
             const SDL_FPoint center{sx * fx * dest0.w, sy * fy * dest0.h};
-            SDL_RenderCopyExF(renderer, tex, nullptr, &dest2, rot, &center,
-                              SDL_FLIP_NONE);
+            SDL_RenderTextureRotated(renderer, tex, nullptr, &dest2, rot, &center,
+                                     SDL_FLIP_NONE);
         } else {
-            SDL_RenderCopyF(renderer, tex, nullptr, &dest0);
+            SDL_RenderTexture(renderer, tex, nullptr, &dest0);
         }
     }
 
@@ -1753,8 +1762,9 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     // 8. Vignette, drawn LAST in the SDL scene pass (A3). Full-viewport edge
     // fade; the texture is rebuilt on resize like the bg and drawn stretched.
     if (g_state.vignette != nullptr) {
-        const SDL_Rect dst{0, 0, out_w, out_h};
-        SDL_RenderCopy(renderer, g_state.vignette, nullptr, &dst);
+        const SDL_FRect dst{0.0f, 0.0f, static_cast<float>(out_w),
+                            static_cast<float>(out_h)};
+        SDL_RenderTexture(renderer, g_state.vignette, nullptr, &dst);
     }
 }
 

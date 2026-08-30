@@ -146,8 +146,7 @@ if ($Tool) {
 # nghttp stack were absent from this list).
 if (-not $Ntldd) {
     $FallbackPatterns = @(
-        'SDL2.dll',
-        'libSDL2-2-0.dll',
+        'SDL3.dll',
         'avcodec-*.dll',
         'avutil-*.dll',
         'swscale-*.dll',
@@ -265,7 +264,7 @@ if ($DllCount -eq 0) {
 # load-critical DLLs actually made it into the bundle, or fail loudly instead
 # of shipping a bundle that dies at startup with a missing-DLL dialog.
 $MissingCritical = @()
-foreach ($name in @('SDL2.dll', 'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll')) {
+foreach ($name in @('SDL3.dll', 'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $DistDir $name))) {
         $MissingCritical += $name
     }

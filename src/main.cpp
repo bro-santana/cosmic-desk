@@ -27,10 +27,11 @@
 #include "viewer/session.h"
 #include "viewer/vrenderer.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 #include <imgui.h>
-#include <imgui_impl_sdl2.h>
-#include <imgui_impl_sdlrenderer2.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_sdlrenderer3.h>
 
 #include <cstdio>
 #include <algorithm>
@@ -93,9 +94,8 @@ void chdir_to_executable_dir() {
 
 std::string asset_path(const char* file_name) {
     std::string path;
-    if (char* base = SDL_GetBasePath()) {
+    if (const char* base = SDL_GetBasePath()) {
         path = base;
-        SDL_free(base);
     }
     path += "assets/";
     path += file_name;
@@ -111,12 +111,13 @@ const char* tray_icon_name() {
 }
 
 // Applies or releases the keyboard grab (plan M4.3). While grabbed, Alt+Tab
-// and the Win key act on the remote machine; SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4
-// keeps Alt+F4 from closing the window (Windows-only hint, harmless elsewhere).
+// and the Win key act on the remote machine; SDL_HINT_WINDOWS_CLOSE_ON_ALT_F4
+// set to "0" keeps Alt+F4 from closing the window (Windows-only hint,
+// harmless elsewhere).
 void apply_input_grab(SDL_Window* window, bool grabbed) {
-    SDL_SetWindowKeyboardGrab(window, grabbed ? SDL_TRUE : SDL_FALSE);
+    SDL_SetWindowKeyboardGrab(window, grabbed);
 #ifdef _WIN32
-    SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, grabbed ? "1" : "0");
+    SDL_SetHint(SDL_HINT_WINDOWS_CLOSE_ON_ALT_F4, grabbed ? "0" : "1");
 #endif
 }
 
@@ -129,9 +130,9 @@ void leave_viewing_ui(SDL_Window* window, bool* input_grabbed,
                       bool* vrenderer_active) {
     // Exit fullscreen for the main window UI, keep viewer_fullscreen for next
     // session.
-    SDL_SetWindowFullscreen(window, 0);
+    SDL_SetWindowFullscreen(window, false);
     // Undo the cursor hiding the Viewing UI applies over the video.
-    SDL_ShowCursor(SDL_ENABLE);
+    SDL_ShowCursor();
     // Release anything still held, then drop the grab so the host does not
     // keep stuck keys (moonlight-qt raiseAllKeys pattern). Flushing is
     // independent of the grab: keys can be held even when the grab is off.
@@ -140,13 +141,14 @@ void leave_viewing_ui(SDL_Window* window, bool* input_grabbed,
         apply_input_grab(window, false);
         *input_grabbed = false;
     }
-    // Restore the hints Viewing changed: minimize-on-focus-loss back to the
-    // default "1", and the Alt+F4 close hint back to "0" (apply_input_grab
-    // already reset the latter when releasing the grab, but restore it
-    // explicitly in case the grab was already off).
+    // Restore the hints Viewing changed: minimize-on-focus-loss back to "1"
+    // as the baseline for the next Viewing session (the hint only takes
+    // effect while fullscreen), and the Alt+F4 close hint back to "1"
+    // (apply_input_grab already reset the latter when releasing the grab,
+    // but restore it explicitly in case the grab was already off).
     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "1");
 #ifdef _WIN32
-    SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "0");
+    SDL_SetHint(SDL_HINT_WINDOWS_CLOSE_ON_ALT_F4, "1");
 #endif
     if (*vrenderer_active) {
         cosmic::viewer::vrenderer_deinit();
@@ -296,49 +298,52 @@ int main(int argc, char** argv) {
     // SUNSHINE_ASSETS_DIR="assets" resolves regardless of how we were launched.
     chdir_to_executable_dir();
 
-#ifdef _WIN32
-    // Per-monitor-v2 DPI awareness: crisp rendering and correct scaling on
-    // HiDPI/mixed-DPI setups. Must be set before SDL_Init creates the video
-    // driver. SDL_WINDOW_ALLOW_HIGHDPI + the ImGui backends then report window
-    // sizes and mouse positions in the same (DPI-scaled) coordinate space, so
-    // the UI, the top bar, and the viewer's mouse mapping all line up.
-    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
-#endif
-
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
 
+    // Per-monitor-v2 DPI awareness: crisp rendering and correct scaling on
+    // HiDPI/mixed-DPI setups. SDL3 makes Windows apps per-monitor-v2 DPI
+    // aware by default. SDL_WINDOW_HIGH_PIXEL_DENSITY + the ImGui backends
+    // then report window sizes and mouse positions in the same (DPI-scaled)
+    // coordinate space, so the UI, the top bar, and the viewer's mouse
+    // mapping all line up.
     SDL_Window* window = SDL_CreateWindow(
-        "Cosmic Desk", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, kWindowWidth,
-        kWindowHeight, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
+        "Cosmic Desk", kWindowWidth, kWindowHeight,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
     if (window == nullptr) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
 
-    SDL_Renderer* renderer =
-        SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
     if (renderer == nullptr) {
         std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+    // Vsync is a renderer property, set once after creation. Not every driver
+    // supports it (SDL_render.h), so a failure here is logged but not fatal:
+    // SDL3 has no accelerated-required renderer flag, and a software-renderer
+    // host without vsync is a supported (if uncapped) fallback.
+    if (!SDL_SetRenderVSync(renderer, 1)) {
+        std::fprintf(stderr, "SDL_SetRenderVSync failed: %s\n", SDL_GetError());
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     cosmic::ui::StyleColorsDefault();
-    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
-    ImGui_ImplSDLRenderer2_Init(renderer);
+    ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer3_Init(renderer);
 
     // U0 scene; draws behind the UI in MainWindow mode.
     cosmic::ui::scene::init(renderer);
 
-    // HiDPI (see ui/scale.h): the DPI-awareness hint above gives us the raw
-    // pixel grid, so ImGui has to be told the display scale or everything it
+    // HiDPI (see ui/scale.h): SDL3's per-monitor-v2 DPI awareness gives us the
+    // raw pixel grid, so ImGui has to be told the display scale or everything it
     // draws comes out at 96-DPI sizes on a 4K panel. Must follow the backend
     // init: rebuilding the atlas drops the backend's font texture.
     cosmic::ui::apply(window);
@@ -348,8 +353,8 @@ int main(int argc, char** argv) {
     {
         const float ui_scale = cosmic::ui::scale();
         SDL_Rect usable = {0, 0, 0, 0};
-        const int display = SDL_GetWindowDisplayIndex(window);
-        if (display < 0 || SDL_GetDisplayUsableBounds(display, &usable) != 0) {
+        const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+        if (display == 0 || !SDL_GetDisplayUsableBounds(display, &usable)) {
             usable.w = 0;
             usable.h = 0;
         }
@@ -491,7 +496,7 @@ int main(int argc, char** argv) {
         std::string address;                // last address queried ("" = none)
         std::string hash;                   // that address's wallpaper hash at query time
         std::filesystem::path path;         // wallcache::path_for result
-        uint64_t last_query_ms = 0;         // SDL_GetTicks64() at the last query
+        uint64_t last_query_ms = 0;         // SDL_GetTicks() at the last query
     } backdrop_memo;
     // Settings edits save on the Settings panel's close transition, not per
     // tick (docs/UI_MIGRATION.md U4); the shutdown save() is the fallback.
@@ -550,25 +555,23 @@ int main(int argc, char** argv) {
                     &input_actions)) {
                 continue;
             }
-            ImGui_ImplSDL2_ProcessEvent(&event);
+            ImGui_ImplSDL3_ProcessEvent(&event);
 
             // Dragged to a monitor with a different DPI: rescale the font and
             // the style so the UI keeps its physical size (see ui/scale.h).
             // Safe here — events are pumped before ImGui::NewFrame(), so the
             // font atlas is never rebuilt mid-frame.
-            if (event.type == SDL_WINDOWEVENT &&
-                event.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED &&
+            if (event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED &&
                 event.window.windowID == SDL_GetWindowID(window)) {
                 cosmic::ui::apply(window);
             }
 
-            // Closing the window (X button or SDL_QUIT) means "get out of the
-            // way", not "stop hosting" — that is what the tray Quit item is
-            // for.
+            // Closing the window (X button or SDL_EVENT_QUIT) means "get out
+            // of the way", not "stop hosting" — that is what the tray Quit
+            // item is for.
             const bool close_requested =
-                event.type == SDL_QUIT ||
-                (event.type == SDL_WINDOWEVENT &&
-                 event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                event.type == SDL_EVENT_QUIT ||
+                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                  event.window.windowID == SDL_GetWindowID(window));
             if (close_requested) {
                 if (has_tray) {
@@ -594,8 +597,7 @@ int main(int argc, char** argv) {
                 } else {
                     running = false;
                 }
-            } else if (event.type == SDL_WINDOWEVENT &&
-                       mode == cosmic::AppMode::Viewing) {
+            } else if (mode == cosmic::AppMode::Viewing) {
                 // Keyboard-grab lifecycle (plan M4.3): SDL releases the grab
                 // implicitly on focus loss, so re-apply it on focus gain and
                 // flush held keys on focus loss so the host does not keep
@@ -603,10 +605,10 @@ int main(int argc, char** argv) {
                 // flush is unconditional: keys can be held even when the grab
                 // is off (the user may have toggled it), and their key-ups
                 // would otherwise never reach the host.
-                if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED &&
+                if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED &&
                     input_grabbed) {
                     apply_input_grab(window, true);
-                } else if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                     cosmic::viewer::input::flush_input_state();
                 }
             }
@@ -708,9 +710,11 @@ int main(int argc, char** argv) {
             if (mode != cosmic::AppMode::HiddenToTray) {
                 if (mode != cosmic::AppMode::Viewing) {
                     // Entering Viewing: keep the fullscreen video visible when
-                    // the app loses focus (moonlight-qt pattern) — SDL would
-                    // otherwise minimize the window mid-stream. Restored to
-                    // the default "1" when leaving Viewing below.
+                    // the app loses focus (moonlight-qt pattern) — pinning
+                    // the hint to "0" guarantees a focus loss mid-stream
+                    // never minimizes the window, regardless of the hint's
+                    // prior value. Restored to "1" when leaving Viewing
+                    // below.
                     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
                     // Grab the keyboard so Alt+Tab / Win act on the remote
                     // machine (plan M4.3).
@@ -739,6 +743,17 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        // While minimized, SDL3's ImGui backend reports a 0x0 DisplaySize, and
+        // the Bridge's layout math (CardOrbitCenter's viewport clamps,
+        // bridge.cpp:254) must never run against a zero viewport — the bounds
+        // invert and Debug builds abort on the libstdc++ clamp assertion.
+        // Skip the frame; SDL_GetWindowFlags is polled fresh each iteration,
+        // so drawing resumes on its own once the window is restored.
+        if ((SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) != 0) {
+            SDL_Delay(50);
+            continue;
+        }
+
         if (mode == cosmic::AppMode::Viewing) {
             // Lazy renderer init once the negotiated stream dimensions are
             // known (the video setup callback stores them in SessionStatus).
@@ -762,7 +777,7 @@ int main(int argc, char** argv) {
             // space the ImGui viewport uses (per-monitor-v2 DPI awareness).
             int out_w = 0;
             int out_h = 0;
-            SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
+            SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h);
             const float bar_h = cosmic::ui::topbar_height();
             const int strip_h = std::min(static_cast<int>(bar_h), out_h);
             const SDL_Rect video_area{0, strip_h, out_w, out_h - strip_h};
@@ -779,8 +794,8 @@ int main(int argc, char** argv) {
                 cosmic::viewer::vrenderer_present_no_frame(renderer, video_area);
             }
 
-            ImGui_ImplSDLRenderer2_NewFrame();
-            ImGui_ImplSDL2_NewFrame();
+            ImGui_ImplSDLRenderer3_NewFrame();
+            ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
             // Top bar (plan M4.1): drawn after the video so it sits above it,
@@ -801,9 +816,9 @@ int main(int argc, char** argv) {
 
             // Hide the local pointer over the stream: the host composites its
             // own cursor into the video, so drawing ours too shows two. This
-            // must go through ImGui, not SDL_ShowCursor() --
-            // ImGui_ImplSDL2_NewFrame() calls SDL_ShowCursor(SDL_TRUE) every
-            // frame unless ImGui's own cursor is None, so a direct hide is
+            // must go through ImGui, not SDL_HideCursor() directly --
+            // ImGui_ImplSDL3_NewFrame() calls SDL_ShowCursor()/SDL_HideCursor()
+            // every frame based on ImGui's own cursor, so a direct hide is
             // undone before the next frame is drawn. Keep the pointer while
             // the top bar is up (its buttons have to be aimed at) and while
             // the window is unfocused, so it is never lost on the way out.
@@ -814,7 +829,7 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Render();
-            ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
+            ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
             SDL_RenderPresent(renderer);
 
             // Apply top-bar and escape-combo actions after the ImGui frame:
@@ -824,8 +839,7 @@ int main(int argc, char** argv) {
             if (input_actions.fullscreen ||
                 topbar_action.kind == cosmic::ui::TopBarAction::ToggleFullscreen) {
                 viewer_fullscreen = !viewer_fullscreen;
-                SDL_SetWindowFullscreen(
-                    window, viewer_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                SDL_SetWindowFullscreen(window, viewer_fullscreen);
             }
             if (input_actions.quit ||
                 topbar_action.kind == cosmic::ui::TopBarAction::Exit) {
@@ -859,8 +873,8 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        ImGui_ImplSDLRenderer2_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
+        ImGui_ImplSDLRenderer3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
         // Bridge overlay (docs/UI_MIGRATION.md U2-U3): fullscreen window with
@@ -876,7 +890,7 @@ int main(int argc, char** argv) {
         bridge_input.share_wallpaper = settings.share_wallpaper;
         bridge_input.service_mode = service_mode;
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
-        bridge_input.time_s = static_cast<double>(SDL_GetTicks64()) / 1000.0;
+        bridge_input.time_s = static_cast<double>(SDL_GetTicks()) / 1000.0;
         bridge_input.hosts = settings.hosts_snapshot();
         // U6: keep the presence poller's target set in sync with the current
         // hosts (address + resolved port). Only call start() when the set
@@ -979,13 +993,13 @@ int main(int argc, char** argv) {
         SDL_RenderClear(renderer);
         int out_w = 0;
         int out_h = 0;
-        SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
+        SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h);
         if (out_w > 0 && out_h > 0) {
             cosmic::ui::scene::SceneInput scene_input;
             const ImVec2 mouse = ImGui::GetIO().MousePos;
             scene_input.mouse_x = mouse.x;
             scene_input.mouse_y = mouse.y;
-            scene_input.time_s = static_cast<float>(SDL_GetTicks64()) / 1000.0f;
+            scene_input.time_s = static_cast<float>(SDL_GetTicks()) / 1000.0f;
             scene_input.motion = 1.0f;
             scene_input.screen_logo_alpha = bridge_result.screen_logo_alpha;
             // PLAN.md D10(e): resolve the focused host's cached wallpaper into
@@ -1001,7 +1015,7 @@ int main(int argc, char** argv) {
                 if (presence_it != presence_snapshot.end()) {
                     hash = presence_it->second.wallpaper_hash;
                 }
-                const uint64_t now_ms = SDL_GetTicks64();
+                const uint64_t now_ms = SDL_GetTicks();
                 const bool stale =
                     now_ms - backdrop_memo.last_query_ms >= 1000;
                 if (bridge_result.backdrop_address != backdrop_memo.address ||
@@ -1015,7 +1029,7 @@ int main(int argc, char** argv) {
             }
             cosmic::ui::scene::draw(renderer, out_w, out_h, scene_input);
         }
-        ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
+        ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
 
         // Apply Bridge actions after the frame (docs/UI_MIGRATION.md U3): the
@@ -1123,8 +1137,8 @@ int main(int argc, char** argv) {
     g_session.reset();
 
     cosmic::ui::tray_stop();
-    ImGui_ImplSDLRenderer2_Shutdown();
-    ImGui_ImplSDL2_Shutdown();
+    ImGui_ImplSDLRenderer3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     cosmic::viewer::vrenderer_deinit();
     // Tear down the scene's layer textures before the renderer goes away.

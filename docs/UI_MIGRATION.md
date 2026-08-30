@@ -3,7 +3,7 @@
 **Goal:** Replace the classic ImGui host-list window with the parallax "exploded
 view" space launcher described and prototyped in
 `design_handoff_cosmic_desk_launcher`, recreating the prototype 1:1 on the
-existing **SDL2 + Dear ImGui + SDL_Renderer** stack. No shaders, no OpenGL.
+existing **SDL3 + Dear ImGui + SDL_Renderer** stack. No shaders, no OpenGL.
 
 The handoff bundle lives at
 `C:\Users\bro\Downloads\Parallax cosmic UI design\design_handoff_cosmic_desk_launcher`
@@ -24,6 +24,17 @@ tasks and "run X, see Y" acceptance. Total estimate: **4–6 weeks**.
 | A4 | **All Bridge UI is one fullscreen borderless ImGui window.** Cards are absolutely-positioned child windows inside it (`SetCursorPos` + `BeginChild`, ID = `"###"+address`). Panels (Settings, Pair) are children too. | Avoids ImGui multi-window z-order pitfalls; keeps the established *action-struct-after-frame* pattern: new `BridgeAction` mirrors today's `HostListAction` so main.cpp's action-application block survives almost unchanged (main.cpp:848–879). |
 | A5 | **Documented deviations from the prototype** (all invisible-in-practice): (a) no `rotateY/rotateX` 3D tilt on cards/desk — ImGui cannot rotate text; parallax translation is kept; (b) depth-of-field blur approximated as opacity fade of far cards (no per-draw blur in SDL_Renderer); (c) card drop-shadow halo drawn from a runtime-generated radial texture (polish, U6); (d) letter-spacing via a per-glyph `TextSpaced()` helper; (e) dock backdrop blur omitted (backdrop is near-opaque in practice); (f) no card hover *scale* (prototype: 1.1 with a springy bezier) — ImGui child windows cannot scale their content; hover feedback is the border/glow highlight only. | The screenshots show cards unrotated and flat; these are the only losses. |
 | A6 | **Old UI deleted at the end** (U7). | Git history is the fallback. |
+
+**A1 superseded (2026-08).** The app migrated to SDL3 post-v1 — see the
+`CMakeLists.txt` SDL3 block and `docs/VENDOR.md`. Rationale: SDL2 is
+feature-frozen and on the sdl2-compat trajectory; the `SDL_AudioStream`
+rewrite A1 feared proved small; and the Linux packaging objection is solved
+by the vendored static `third-party/SDL` submodule (tag `release-3.4.12`),
+built only where no system SDL3 package exists. Two deliberate behavior
+changes came with the migration: texture scaling now defaults to SDL3's
+linear filtering (improves scaled video; SDL2's default was nearest), and
+the audio device buffer is no longer pinned to 4096 samples (SDL3 manages
+buffering itself).
 
 **Fonts:** IBM Plex Mono 400/500/700 + IBM Plex Sans 400/500/600 TTFs committed to
 `assets/fonts/` (OFL — license file included). Michroma is **not** used: the

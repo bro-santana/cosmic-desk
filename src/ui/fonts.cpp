@@ -3,7 +3,7 @@
 
 #include "ui/fonts.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <imgui.h>
 
 #include <cmath>
@@ -35,12 +35,11 @@ ImFont* g_mono_bold = nullptr;
 // Absolute path to `assets/fonts/<name>` next to the executable. Empty when
 // SDL cannot determine the base path.
 std::string FontPath(const char* name) {
-    char* base = SDL_GetBasePath();
+    const char* base = SDL_GetBasePath();  // SDL-owned; do not free.
     if (base == nullptr) {
         return std::string();
     }
     const std::string path = std::string(base) + "assets/fonts/" + name;
-    SDL_free(base);
     return path;
 }
 

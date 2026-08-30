@@ -22,7 +22,7 @@ We do not write a streaming stack; we assemble one from GPL-3.0 upstreams:
 - **moonlight-qt** — patterns only: keyboard grab (Alt+Tab capture), SDL scancode →
   Windows VK table, fullscreen handling.
 
-UI is SDL2 + Dear ImGui everywhere. Tray via the tiny `tray` C library Sunshine
+UI is SDL3 + Dear ImGui everywhere. Tray via the tiny `tray` C library Sunshine
 vendors. No Qt, no web UI, no gamepad, no UPnP.
 
 **Copied code must be documented explicitly in the README.** `docs/VENDOR.md` holds
@@ -82,7 +82,7 @@ viewer network/decode already live on worker threads in the upstream code.
  │ VIEWER THREADS (only while a session is open)                                  │
  │   moonlight-common-c internal threads (RTSP, control ENet, RTP receive, FEC)   │
  │   decode thread: DU queue → avcodec → latest-frame slot → main thread uploads  │
- │   audio: decodeAndPlaySample cb → opus_multistream_decode → SDL_QueueAudio     │
+ │   audio: decodeAndPlaySample cb → opus_multistream_decode → SDL_AudioStream    │
  └────────────────────────────────────────────────────────────────────────────────┘
 
   Viewer machine ──/pair, /serverinfo──▶ Host :47989/:47984 (HTTPS after pairing)
@@ -344,7 +344,7 @@ cosmic-desk/
 │       ├── session.{h,cpp}        # gs_init/gs_pair/gs_start_app + LiStartConnection lifecycle
 │       ├── decoder.{h,cpp}        # avcodec decode thread (pattern: moonlight-embedded ffmpeg.c)
 │       ├── vrenderer.{h,cpp}      # SDL IYUV texture upload/present (pattern: video/sdl.c)
-│       ├── audio.{h,cpp}          # opus multistream + SDL_QueueAudio (pattern: audio/sdl.c)
+│       ├── audio.{h,cpp}          # opus multistream + SDL_PutAudioStreamData (pattern: audio/sdl.c)
 │       ├── input.{h,cpp}          # SDL events → LiSend*; grab; escape combos; monitor-switch synth
 │       └── keymap.{h,cpp}         # SDL scancode → Windows VK (lifted from moonlight-qt keyboard.cpp)
 ├── host/
@@ -355,7 +355,7 @@ cosmic-desk/
 │   └── cosmicsvc.cpp              # service launcher; adapted from Sunshine tools/sunshinesvc.cpp
 ├── third-party/
 │   ├── moonlight-common-c/        # git submodule (recursive: bundled patched enet/, nanors)
-│   ├── imgui/                     # vendored core + imgui_impl_sdl2 + imgui_impl_sdlrenderer2
+│   ├── imgui/                     # vendored core + imgui_impl_sdl3 + imgui_impl_sdlrenderer3
 │   ├── Simple-Web-Server/         # vendored header-only (nvhttp dependency)
 │   ├── tray/                      # vendored (Sunshine's fork)
 │   ├── libgamestream/             # vendored from moonlight-embedded: client.c http.c mkcert.c xml.c
@@ -371,7 +371,7 @@ cosmic-desk/
 └── README.md                      # incl. mandatory "Code provenance & licensing" section (GPL-3.0)
 ```
 
-CMake: top level finds shared deps (SDL2, OpenSSL, CURL, expat, Opus, FFmpeg via
+CMake: top level finds shared deps (SDL3, OpenSSL, CURL, expat, Opus, FFmpeg via
 pkg-config, Boost), builds third-party as static libs (moonlight-common-c has its own
 CMake; imgui/tray/libgamestream get tiny hand-written CMakeLists), builds
 `host/sunshine` as static lib `cosmic_host`, links one executable `cosmicdesk`.
@@ -389,7 +389,7 @@ pacman -S --needed git \
   mingw-w64-ucrt-x86_64-pkgconf \
   mingw-w64-ucrt-x86_64-cmake \
   mingw-w64-ucrt-x86_64-ninja \
-  mingw-w64-ucrt-x86_64-SDL2 \
+  mingw-w64-ucrt-x86_64-sdl3 \
   mingw-w64-ucrt-x86_64-ffmpeg \
   mingw-w64-ucrt-x86_64-openssl \
   mingw-w64-ucrt-x86_64-curl \
@@ -416,7 +416,6 @@ package list. MinHook (`libMinHook.a`, `find_library(... REQUIRED)` in
 ```
 sudo apt update && sudo apt install -y \
   build-essential cmake ninja-build git pkg-config \
-  libsdl2-dev \
   libavcodec-dev libavutil-dev libswscale-dev libavfilter-dev \
   libssl-dev libcurl4-openssl-dev libexpat1-dev libopus-dev \
   uuid-dev \
@@ -444,7 +443,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 | Dependency | Role | Windows (MSYS2 ucrt64) | Ubuntu 24.04 | Obtained |
 |---|---|---|---|---|
-| SDL2 | window/render/audio/input | `…-SDL2` | `libsdl2-dev` | system |
+| SDL3 | window/render/audio/input | `…-sdl3` | none (vendored `third-party/SDL` submodule, static) | system on Windows, vendored on Linux |
 | Dear ImGui (+2 backends) | all UI | — | — | vendored |
 | FFmpeg | host encode + viewer decode | `…-ffmpeg` | `libav*-dev` | system (D4) |
 | OpenSSL | pairing crypto, TLS | `…-openssl` | `libssl-dev` | system |
@@ -477,7 +476,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | moonlight-embedded `src/video/ffmpeg.c`, `src/video/sdl.c`, `src/audio/sdl.c` | *patterns* → `src/viewer/{decoder,vrenderer,audio}.cpp` | rewrite portably, don't port (repo is Linux-only) |
 | moonlight-qt `keyboard.cpp` VK table | `src/viewer/keymap.cpp` | lift wholesale + escape-combo pattern |
 | moonlight-qt `session.cpp`/`input/input.cpp` | *pattern* → `src/viewer/input.cpp` | SDL_SetWindowKeyboardGrab, NO_CLOSE_ON_ALT_F4 hint, relative mouse, FULLSCREEN_DESKTOP |
-| Dear ImGui core + sdl2/sdlrenderer2 backends | `third-party/imgui/` | vendored |
+| Dear ImGui core + sdl3/sdlrenderer3 backends | `third-party/imgui/` | vendored |
 | Sunshine `tools/sunshinesvc.cpp` | `tools/cosmicsvc.cpp` | service launcher; names/args/log changed, log rotation inlined (no Boost) |
 | Sunshine `src/entry_handler.cpp` (`service_ctrl::*`) | `src/app/service_ctrl.{h,cpp}` | SCM helpers + GetTcpTable readiness poll on `port_base` |
 | Sunshine `src/system_tray.cpp` `tray_quit_cb` | `src/main.cpp` tray Quit path | exit-code-1115 handshake; explicit `--service` flag replaces the console heuristic |

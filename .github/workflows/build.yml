@@ -49,7 +49,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-sdl3
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-curl
@@ -126,7 +126,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config git dpkg-dev \
-            libsdl2-dev nlohmann-json3-dev \
+            nlohmann-json3-dev \
             libavcodec-dev libavutil-dev libswscale-dev libavfilter-dev \
             libssl-dev libcurl4-openssl-dev libexpat1-dev libopus-dev \
             uuid-dev \
@@ -136,6 +136,14 @@ jobs:
             libpulse-dev libva-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
             python3-pip python3-setuptools
+          # X11 + Wayland video, GL/EGL rendering, and ALSA/PipeWire audio
+          # deps for the vendored static SDL3 build (no libsdl3-dev on
+          # ubuntu-24.04); libpulse-dev is already in the list above.
+          sudo apt-get install -y \
+            libxext-dev libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev \
+            libwayland-dev libdecor-0-dev libpipewire-0.3-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libgbm-dev \
+            libasound2-dev libdbus-1-dev
 
       - name: Install Python build deps
         run: sudo pip install --break-system-packages jinja2 setuptools
