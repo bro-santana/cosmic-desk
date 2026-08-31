@@ -429,7 +429,15 @@ namespace platf::dxgi {
       }
     }
 
-    BOOST_LOG(error) << "DuplicateOutput() test failed [0x"sv << util::hex(status).to_string_view() << ']';
+    // COSMIC MODIFICATION: during enumeration this is an expected outcome -- the
+    // output is simply excluded from display_names() -- and the /serverinfo display
+    // extension re-runs the probe on every client poll, so logging it at error level
+    // spams the host log indefinitely. Only a failure on the capture path is an error.
+    if (enumeration_only) {
+      BOOST_LOG(debug) << "DuplicateOutput() test failed [0x"sv << util::hex(status).to_string_view() << ']';
+    } else {
+      BOOST_LOG(error) << "DuplicateOutput() test failed [0x"sv << util::hex(status).to_string_view() << ']';
+    }
     return false;
   }
 
@@ -452,6 +460,27 @@ namespace platf::dxgi {
     }
   }
 
+  /**
+   * @brief Installs the hybrid GPU preference hook, once for the life of the process.
+   * @details COSMIC MODIFICATION: upstream installs this from display_base_t::init()
+   *          only, so it is absent whenever the process enumerates displays without
+   *          ever having captured -- which the /serverinfo display extension does every
+   *          time a client polls. Unhooked, DXGI reparents outputs onto the render GPU
+   *          on hybrid systems and test_dxgi_duplication() then fails with E_INVALIDARG
+   *          for every reparented output, silently dropping it from display_names().
+   *          Both callers must install it, so it lives here rather than in init().
+   */
+  void install_hybrid_gpu_hook() {
+    static std::once_flag hybrid_gpu_hook_once_flag;
+
+    std::call_once(hybrid_gpu_hook_once_flag, []() {
+      // We aren't calling MH_Uninitialize(), but that's okay because this hook lasts for the life of the process
+      MH_Initialize();
+      MH_CreateHookApi(L"win32u.dll", "NtGdiDdDDIGetCachedHybridQueryValue", (void *) NtGdiDdDDIGetCachedHybridQueryValueHook, nullptr);
+      MH_EnableHook(MH_ALL_HOOKS);
+    });
+  }
+
   int display_base_t::init(const ::video::config_t &config, const std::string &display_name) {
     std::once_flag windows_cpp_once_flag;
 
@@ -469,14 +498,9 @@ namespace platf::dxgi {
 
         FreeLibrary(user32);
       }
-
-      {
-        // We aren't calling MH_Uninitialize(), but that's okay because this hook lasts for the life of the process
-        MH_Initialize();
-        MH_CreateHookApi(L"win32u.dll", "NtGdiDdDDIGetCachedHybridQueryValue", (void *) NtGdiDdDDIGetCachedHybridQueryValueHook, nullptr);
-        MH_EnableHook(MH_ALL_HOOKS);
-      }
     });
+
+    install_hybrid_gpu_hook();
 
     // Get rectangle of full desktop for absolute mouse coordinates
     env_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -1048,6 +1072,13 @@ namespace platf {
     HRESULT status;
 
     BOOST_LOG(debug) << "Detecting monitors..."sv;
+
+    // COSMIC MODIFICATION: enumeration must run with the same hybrid GPU
+    // preference hook that capture gets, otherwise DXGI reparents outputs and
+    // this function reports a different (smaller) set of displays than the one
+    // display_base_t::init() can actually capture. Must precede the factory
+    // creation below -- the hook takes effect when DXGI resolves adapters.
+    dxgi::install_hybrid_gpu_hook();
 
     // We sync the thread desktop once before we start the enumeration process
     // to ensure test_dxgi_duplication() returns consistent results for all GPUs
