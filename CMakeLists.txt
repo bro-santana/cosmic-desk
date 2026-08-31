@@ -25,9 +25,11 @@ endif()
 # Linux builds the vendored third-party/SDL submodule statically instead, since
 # Ubuntu 24.04 (the Linux baseline per docs/BUILDING.md) ships no libsdl3-dev.
 # This supersedes decision A1 in docs/UI_MIGRATION.md.
-# 3.2 floor: everything the port uses is in SDL3's initial stable ABI, so an
-# older pre-release system SDL3 must fall through to the vendored build.
-find_package(SDL3 3.2 CONFIG QUIET)
+# 3.4 floor: the image clipboard (Phase 2 Wave B) needs SDL 3.4's Windows
+# clipboard PNG support -- the registered "PNG" clipboard format in SDL's
+# Windows backend, alongside SDL_SetClipboardData/SDL_GetClipboardData -- so an
+# older system SDL3 must fall through to the vendored build.
+find_package(SDL3 3.4 CONFIG QUIET)
 if(NOT SDL3_FOUND)
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
     set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -109,6 +111,7 @@ add_executable(cosmicdesk
     src/app/settings.cpp
     src/app/wallcache.cpp
     src/app/clipsync.cpp
+    src/app/clipimage.cpp
     src/app/service_ctrl.cpp
     src/app/single_instance.cpp
     src/hostglue/host.cpp

@@ -5,6 +5,7 @@
 // threads (M1) and the viewer session (M2) plug into this loop later.
 
 #include "app/autostart.h"
+#include "app/clipimage.h"
 #include "app/clipsync.h"
 #include "app/presence.h"
 #include "app/settings.h"
@@ -133,6 +134,52 @@ uint64_t Fnv1a64(const std::string& s) {
         hash *= 0x100000001b3ull;
     }
     return hash;
+}
+
+// Backs an inbound image apply (see the clipboard-in drain below): owns both
+// byte strings offered to SDL_SetClipboardData for the duration SDL needs
+// them. Heap-allocated and handed to SDL as userdata. Every path
+// SDL_SetClipboardData can take FROM THE CALL SITE BELOW transfers ownership
+// of this pointer to SDL, success or failure alike (on failure it leaves the
+// callback/userdata installed and cleans up later, via
+// SDL_CancelClipboardData, the next SDL_SetClipboardData/SDL_SetClipboardText
+// call, or at SDL_Quit): SDL_clipboard.c has two earlier returns that leave
+// a passed-in userdata unowned (uninitialized video; invalid parameters --
+// null callback/mime_types or a zero count), but neither is reachable from
+// our call site, since video is already initialized by the time the main
+// loop is running and our arguments are always the valid non-null
+// callback + mime_types + count>0 shape. The call site must therefore never
+// delete this itself -- only the cleanup callback below does.
+struct ClipboardImagePayload {
+    std::string bmp;
+    std::string png;
+};
+
+// SDL_ClipboardDataCallback: called from SDL's C frames whenever another
+// application (or SDL itself, servicing SDL_GetClipboardData) asks for one of
+// the mime types offered below, so no exception may escape it, and it must
+// tolerate being asked for a mime type it does not carry (returns nullptr
+// with *size = 0, which SDL_ClipboardDataCallback's contract treats as
+// zero-length data).
+const void* clipboard_image_data(void* userdata, const char* mime_type, size_t* size) {
+    const auto* payload = static_cast<const ClipboardImagePayload*>(userdata);
+    if (SDL_strcmp(mime_type, "image/bmp") == 0) {
+        *size = payload->bmp.size();
+        return payload->bmp.data();
+    }
+    if (SDL_strcmp(mime_type, "image/png") == 0) {
+        *size = payload->png.size();
+        return payload->png.data();
+    }
+    *size = 0;
+    return nullptr;
+}
+
+// SDL_ClipboardCleanupCallback: called by SDL once this payload is no longer
+// needed (cleared, superseded by a later SDL_SetClipboardData/SetClipboardText
+// call, or at SDL_Quit) -- the only place that frees it.
+void clipboard_image_cleanup(void* userdata) {
+    delete static_cast<ClipboardImagePayload*>(userdata);
 }
 
 // Leaves the Viewing UI (plan M4.3): flush held input, release the keyboard
@@ -561,6 +608,32 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     // Last-seen Windows clipboard sequence number (see the poll below).
     DWORD last_clip_seq = 0;
+    // Registered once: RegisterClipboardFormatW looks up (and registers, the
+    // first time any process in the session calls it) a format atom --
+    // caching it avoids repeating that call on every SDL_EVENT_CLIPBOARD_UPDATE.
+    // "PNG" is the exact name SDL's own Windows clipboard backend registers
+    // for image/png (see third-party/SDL/src/video/windows/
+    // SDL_windowsclipboard.c's GetClipboardFormatPNG), so this reads the same
+    // clipboard format SDL itself would set or get.
+    const UINT kPngClipboardFormat = RegisterClipboardFormatW(L"PNG");
+    // Sequence number the Windows clipboard had right after our own last
+    // successful image apply (0 = none), checked by the
+    // SDL_EVENT_CLIPBOARD_UPDATE handler below to recognize that apply's own
+    // echo -- see that handler for why this, rather than a byte hash, is
+    // needed for images. This alone is sufficient: the handler compares the
+    // clipboard's current sequence number against exactly this value, so
+    // only the specific write this variable records can ever be suppressed.
+    // The apply path deliberately does NOT also stamp last_clip_seq above
+    // (an earlier version of this did, reasoning it would additionally stop
+    // the poll from synthesizing a duplicate event for our own write) --
+    // that would be actively harmful, not just redundant: last_clip_seq is
+    // the poll's "already seen" cursor for detecting *external* changes, and
+    // if some other process happens to copy something in the very same tick
+    // as our apply, latching last_clip_seq to our write's sequence number
+    // would make the poll treat that other, genuine external change as
+    // already seen and silently drop it. image_applied_seq is only ever
+    // written by the apply path.
+    DWORD image_applied_seq = 0;
 #endif
 
     while (running) {
@@ -616,9 +689,19 @@ int main(int argc, char** argv) {
                 // the result. SDL_free runs on every path regardless.
                 char* clip = SDL_GetClipboardText();
                 std::string text;
-                if (clip != nullptr && clip[0] != '\0' &&
-                    SDL_strlen(clip) <= cosmic::clipboard::kMaxBytes) {
-                    text.assign(clip);
+                if (clip != nullptr && clip[0] != '\0') {
+                    const size_t clip_len = SDL_strlen(clip);
+                    if (clip_len <= cosmic::clipboard::kMaxBytes) {
+                        text.assign(clip);
+                    } else {
+                        // At most one line per clipboard-update event, not per tick; SDL focus-gain
+                        // can duplicate it, since the echo-suppression hash below skips this branch.
+                        std::fprintf(stderr,
+                                     "clipboard: local copy of %zu bytes "
+                                     "exceeds the %zu-byte cap; not "
+                                     "shared.\n",
+                                     clip_len, cosmic::clipboard::kMaxBytes);
+                    }
                 }
                 SDL_free(clip);
                 if (!text.empty()) {
@@ -635,7 +718,7 @@ int main(int argc, char** argv) {
                         // design: the /cosmic/clipboard route owns the
                         // enable/session gate (see clipboard.h), not this
                         // call site.
-                        cosmic::clipboard::publish(text);
+                        cosmic::clipboard::publish(cosmic::clipboard::Mime::Text, text);
                         // clipsync has no route of its own to gate it, unlike
                         // the host bridge above: cosmic::clipboard::enabled()
                         // is the live mirror of settings.share_clipboard and
@@ -643,7 +726,141 @@ int main(int argc, char** argv) {
                         // governs both the host role and this viewer role, so
                         // gate the POST here.
                         if (cosmic::clipboard::enabled()) {
-                            cosmic::clipsync::publish_local(text);
+                            cosmic::clipsync::publish_local(cosmic::clipsync::Mime::Text, text);
+                        }
+                    }
+                } else {
+                    // No text on the clipboard: it may hold an image instead.
+                    // Text always wins when both are present -- e.g. a
+                    // browser copy that also places HTML/plain text alongside
+                    // the image -- because this branch only runs once
+                    // SDL_GetClipboardText above has already come back empty.
+#ifdef _WIN32
+                    // Live Win32 format queries: cheap (IsClipboardFormatAvailable
+                    // opens no clipboard handle and performs no transfer) and
+                    // always current, unlike SDL_GetClipboardMimeTypes (stale
+                    // for a tray-hidden window -- see the sequence-poll
+                    // comment above) or this event, which the poll
+                    // synthesizes with no mime list at all (num_mime_types ==
+                    // 0).
+                    const bool clip_has_png = IsClipboardFormatAvailable(kPngClipboardFormat);
+                    const bool clip_has_bmp = IsClipboardFormatAvailable(CF_DIBV5) ||
+                                              IsClipboardFormatAvailable(CF_DIB);
+                    // image_applied_seq is stamped by our own image apply
+                    // below with the sequence number the clipboard had right
+                    // after SDL_SetClipboardData returned (SDL 3.4 writes to
+                    // the clipboard synchronously, so the number has already
+                    // advanced by then; see image_applied_seq's declaration
+                    // for why the apply path stamps only this variable and
+                    // not last_clip_seq). If the sequence has not moved
+                    // since, this event -- whether it is the one
+                    // SDL_SetClipboardData itself queues on success, or a
+                    // duplicate the poll above lets through -- is that
+                    // apply's own echo, and capturing it again would bounce
+                    // the image straight back to the peer forever. A byte
+                    // hash, as used for text above, cannot catch this: our
+                    // apply only ever puts CF_DIB on the clipboard, so
+                    // re-capturing it transcodes to different PNG bytes than
+                    // the ones we applied.
+                    const bool is_echo = image_applied_seq != 0 &&
+                                         GetClipboardSequenceNumber() == image_applied_seq;
+#else
+                    // Decide only from the event's own mime list:
+                    // SDL_HasClipboardData would work too, but on X11 it
+                    // performs a full clipboard transfer (a round-trip to the
+                    // selection owner) per call, which this handler cannot
+                    // afford for events it may end up ignoring entirely.
+                    bool clip_has_png = false;
+                    bool clip_has_bmp = false;
+                    for (Sint32 i = 0; i < event.clipboard.num_mime_types; ++i) {
+                        const char* mt = event.clipboard.mime_types[i];
+                        if (SDL_strcmp(mt, "image/png") == 0) {
+                            clip_has_png = true;
+                        } else if (SDL_strcmp(mt, "image/bmp") == 0) {
+                            clip_has_bmp = true;
+                        }
+                    }
+                    // owner == true means this update is our own write (see
+                    // SDL_ClipboardEvent's doc comment): the apply below just
+                    // ran SDL_SetClipboardData. Unlike Windows there is no
+                    // separate sequence-number channel here, but none is
+                    // needed -- X11/Wayland only mark an event as owned when
+                    // this process is the current selection owner, so it
+                    // cannot alias a later external change the way a bare
+                    // sequence number could.
+                    const bool is_echo = event.clipboard.owner;
+#endif
+                    if (!is_echo && (clip_has_png || clip_has_bmp)) {
+                        // The clipboard holds an image, not the text (if any)
+                        // this hash last described -- clear it now, on
+                        // detection, regardless of whether the capture below
+                        // actually succeeds: an oversize or failed-transcode
+                        // image still means the previously recorded text is
+                        // no longer on the clipboard, and leaving the hash
+                        // pointing at it would make the user's next copy of
+                        // that same text look like an echo and be silently
+                        // swallowed.
+                        clipboard_applied_hash = 0;
+                        // Prefer the native PNG -- zero-loss -- and fall back
+                        // to the BMP file SDL synthesizes from CF_DIB/CF_DIBV5
+                        // on Windows, transcoding it (see clipimage.h).
+                        // SDL_GetClipboardData's buffer is freed on every path
+                        // below.
+                        std::string png;
+                        bool have_png = false;
+                        if (clip_has_png) {
+                            size_t png_size = 0;
+                            void* png_data = SDL_GetClipboardData("image/png", &png_size);
+                            if (png_data != nullptr) {
+                                if (png_size > 0 && png_size <= cosmic::clipboard::kMaxImageBytes) {
+                                    png.assign(static_cast<const char*>(png_data), png_size);
+                                    have_png = true;
+                                } else if (png_size > cosmic::clipboard::kMaxImageBytes) {
+                                    // At most one line per clipboard-update
+                                    // event -- see the oversize-text log above
+                                    // for the same reasoning.
+                                    std::fprintf(stderr,
+                                                 "clipboard: local image of %zu bytes "
+                                                 "exceeds the %zu-byte cap; not "
+                                                 "shared.\n",
+                                                 png_size, cosmic::clipboard::kMaxImageBytes);
+                                }
+                                SDL_free(png_data);
+                            }
+                        }
+                        if (!have_png && clip_has_bmp) {
+                            size_t bmp_size = 0;
+                            void* bmp_data = SDL_GetClipboardData("image/bmp", &bmp_size);
+                            if (bmp_data != nullptr) {
+                                if (bmp_size > 0 &&
+                                    cosmic::clipimage::bmp_to_png(
+                                        bmp_data, bmp_size,
+                                        cosmic::clipboard::kMaxImageBytes, png)) {
+                                    have_png = true;
+                                } else if (bmp_size > 0) {
+                                    std::fprintf(stderr,
+                                                 "clipboard: local image failed to "
+                                                 "transcode or exceeds the %zu-byte "
+                                                 "cap; not shared.\n",
+                                                 cosmic::clipboard::kMaxImageBytes);
+                                }
+                                SDL_free(bmp_data);
+                            }
+                        }
+                        if (have_png) {
+                            // clipboard_applied_hash was already cleared on
+                            // detection above, regardless of this outcome.
+                            // Same publish pattern as the text path above:
+                            // unconditional to the host bridge (the route
+                            // owns the enable/session gate), gated behind
+                            // enabled() for clipsync. png is moved into the
+                            // second call only, after the first has already
+                            // read it by const reference.
+                            cosmic::clipboard::publish(cosmic::clipboard::Mime::Png, png);
+                            if (cosmic::clipboard::enabled()) {
+                                cosmic::clipsync::publish_local(cosmic::clipsync::Mime::Png,
+                                                                std::move(png));
+                            }
                         }
                     }
                 }
@@ -752,6 +969,10 @@ int main(int argc, char** argv) {
             SDL_RaiseWindow(window);
         }
 
+        // Expire any GET /cosmic/clipboard?wait=1 request parked past its
+        // hold time (no timer/thread backs this -- the main loop drives it).
+        cosmic::clipboard::tick();
+
         // Clipboard-in: drain both inbound paths every frame regardless of
         // which one is realistically active on this machine (viewing ->
         // clipsync from the host; hosting -> clipboard.h from a connected
@@ -765,11 +986,19 @@ int main(int argc, char** argv) {
             // sharing is off.
             const bool sharing_enabled = cosmic::clipboard::enabled();
             std::string incoming;
+            // Tracked in cosmic::clipboard::Mime terms regardless of which
+            // side the value was drained from, so the apply logic below has
+            // one mime type to switch on.
+            cosmic::clipboard::Mime incoming_mime = cosmic::clipboard::Mime::Text;
             bool have_incoming = false;
             std::string from_host;
-            if (cosmic::clipsync::take_incoming(from_host) && sharing_enabled &&
-                !from_host.empty()) {
+            cosmic::clipsync::Mime from_host_mime = cosmic::clipsync::Mime::Text;
+            if (cosmic::clipsync::take_incoming(from_host, from_host_mime) &&
+                sharing_enabled && !from_host.empty()) {
                 incoming = std::move(from_host);
+                incoming_mime = from_host_mime == cosmic::clipsync::Mime::Png
+                                    ? cosmic::clipboard::Mime::Png
+                                    : cosmic::clipboard::Mime::Text;
                 have_incoming = true;
             }
             // The POST route already refuses to fill this buffer while
@@ -782,12 +1011,76 @@ int main(int argc, char** argv) {
             // valid from_host value already drained above -- once drained,
             // the worker's slot is gone and the value would be lost for good.
             std::string from_client;
-            if (cosmic::clipboard::take_incoming(from_client) && sharing_enabled &&
-                !from_client.empty()) {
+            cosmic::clipboard::Mime from_client_mime = cosmic::clipboard::Mime::Text;
+            if (cosmic::clipboard::take_incoming(from_client, from_client_mime) &&
+                sharing_enabled && !from_client.empty()) {
                 incoming = std::move(from_client);
+                incoming_mime = from_client_mime;
                 have_incoming = true;
             }
-            if (have_incoming && !incoming.empty()) {
+            if (have_incoming && !incoming.empty() &&
+                incoming_mime == cosmic::clipboard::Mime::Png) {
+                // Image apply: transcode to BMP and, on success, offer BOTH
+                // representations, fail closed on transcode failure (leave
+                // the clipboard untouched rather than apply anything
+                // partial/garbage).
+                std::string bmp;
+                if (cosmic::clipimage::png_to_bmp(incoming.data(), incoming.size(), bmp)) {
+                    // BMP must be listed first: Windows' WIN_SetClipboardData
+                    // (third-party/SDL/src/video/windows/SDL_windowsclipboard.c)
+                    // sets only the first image mime type it recognises in
+                    // this list, and CF_DIB (from image/bmp) is what pastes
+                    // universally there; X11 advertises both regardless of
+                    // order.
+                    static const char* const kImageMimeTypes[] = {"image/bmp", "image/png"};
+                    // Heap-allocated and hand it to SDL as userdata: every
+                    // path SDL_SetClipboardData can take from this call site
+                    // transfers ownership to SDL, success or failure alike
+                    // (see ClipboardImagePayload's comment for why the two
+                    // paths that would leave it unowned cannot be taken
+                    // here) -- this call site must never delete it itself.
+                    auto* payload = new ClipboardImagePayload{std::move(bmp), std::move(incoming)};
+                    const bool applied =
+                        SDL_SetClipboardData(clipboard_image_data, clipboard_image_cleanup, payload,
+                                              kImageMimeTypes, SDL_arraysize(kImageMimeTypes));
+                    // Whether SDL_SetClipboardData succeeded or not, payload
+                    // is now SDL's to free -- never delete it here.
+                    // The clipboard no longer holds the text this hash
+                    // described (if any), success or failure: a failed
+                    // SDL_SetClipboardData has still called
+                    // SDL_CancelClipboardData and let the backend clear the
+                    // real clipboard before it could fail, so the previously
+                    // recorded text is gone either way. Reset unconditionally
+                    // so a later genuine local copy of that same text is not
+                    // mistaken for an echo of the stale hash and silently
+                    // swallowed.
+                    clipboard_applied_hash = 0;
+#ifdef _WIN32
+                    if (applied) {
+                        // SDL 3.4 writes to the clipboard synchronously, so
+                        // the sequence number has already advanced by the
+                        // time SDL_SetClipboardData returns. Stamp
+                        // image_applied_seq with it so the
+                        // SDL_EVENT_CLIPBOARD_UPDATE handler recognizes the
+                        // real event this call queues (or any duplicate the
+                        // poll above lets through) as this apply's own echo.
+                        //
+                        // Deliberately NOT also stamping last_clip_seq (an
+                        // earlier version of this did, as a "belt and braces"
+                        // pair): image_applied_seq alone already fully
+                        // suppresses the echo in the handler below, so
+                        // touching last_clip_seq buys nothing, and it is
+                        // actively harmful -- in the race where some other
+                        // process copies something onto the clipboard in the
+                        // very same tick as this apply, latching last_clip_seq
+                        // to this write's sequence number would make the poll
+                        // above treat that other, genuine external change as
+                        // already seen and silently drop it.
+                        image_applied_seq = GetClipboardSequenceNumber();
+                    }
+#endif
+                }
+            } else if (have_incoming && !incoming.empty()) {
                 // SDL_SetClipboardText takes a C string, so an embedded NUL
                 // would truncate what it actually writes. Truncate here,
                 // before hashing, so the hash describes what the clipboard

@@ -36,6 +36,11 @@ extern "C" {
 // COSMIC MODIFICATION: system_tray.h deleted — Cosmic Desk has its own tray (M0).
 #include "thread_safe.h"
 #include "utility.h"
+// COSMIC MODIFICATION: clipboard session bridge. Same pattern as
+// hostglue/pin_bridge.h in nvhttp.cpp: declared in the app's src/ tree,
+// implemented in clipboard.cpp in the cosmicdesk target, not in cosmic_host.
+// stream.cpp needs it to release clipboard session state at teardown.
+#include "hostglue/clipboard.h"
 
 constexpr int IDX_START_A = 0;
 constexpr int IDX_START_B = 1;
@@ -1943,6 +1948,15 @@ namespace stream {
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
+        // COSMIC MODIFICATION: release clipboard session state now, before the
+        // rest of teardown runs. Without this, a parked GET
+        // /cosmic/clipboard?wait=1 would hold its Response for up to
+        // kClipboardHoldMs (20 s) after the stream already ended. Clearing the
+        // owner first means a clipboard request that has not yet passed the
+        // owner check answers 404 instead of re-parking.
+        cosmic::clipboard::clear_owner();
+        cosmic::clipboard::clear_waiters();
+
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
         if (proc::proc.running()) {
           // COSMIC MODIFICATION: system_tray::update_tray_pausing() removed — Cosmic

@@ -33,6 +33,7 @@ Upstream projects below are GPL-3.0 or permissively licensed. The repository's
 | inputtino (Linux uinput injection) | https://github.com/games-on-whales/inputtino (MIT) | commit `f4ce2b0df536ef309e9ff318f75b460f7097d7c1` | Submodule, unmodified | `third-party/inputtino/` |
 | lunasvg (runtime SVG rasterizer; bundled plutovg, no submodule) | https://github.com/sammycage/lunasvg (MIT) | tag `v3.5.0`, commit `83c58df8103dc7dca423dfd824992af94d49bed6` | Vendored, unmodified | `third-party/lunasvg/` |
 | stb_image (single-header image decoder; Bridge wallpaper backdrop) | https://github.com/nothings/stb (public domain / MIT dual-licensed) | v2.30, commit `013ac3beddff3dbffafd5177e7972067cd2b5083` | Vendored, unmodified | `third-party/stb/stb_image.h` |
+| stb_image_write (single-header image encoder; clipboard image BMP<->PNG transcoding) | https://github.com/nothings/stb (public domain / MIT dual-licensed) | v1.16, commit `013ac3beddff3dbffafd5177e7972067cd2b5083` | Vendored, unmodified | `third-party/stb/stb_image_write.h` |
 | IBM Plex Mono (Regular/Medium/Bold) | https://github.com/google/fonts `ofl/ibmplexmono` (SIL OFL 1.1) | `main` branch at vendor time (2026-08-28) | Vendored, unmodified | `assets/fonts/IBMPlexMono-*.ttf` |
 | IBM Plex Sans (Regular/Medium/SemiBold) | https://github.com/IBM/plex `packages/plex-sans/fonts/complete/ttf` (SIL OFL 1.1) | `master` branch at vendor time (2026-08-28) | Vendored, unmodified | `assets/fonts/IBMPlexSans-*.ttf`, `OFL.txt` |
 | Parallax layer artwork (desk, monitor, planets, stars, nebula, objects, reflex, screen-logo) | Cosmic Desk design handoff (`design_handoff_cosmic_desk_launcher/layers/*.svg`; nebula extracted from `Cosmic Desk.dc.html`) | local design files | Vendored, unmodified | `assets/ui/layers/*.svg` |
@@ -96,7 +97,12 @@ comment):
 - `pin_bridge` hook in `nvhttp.cpp` `pair()`: pending pairing requests are
   surfaced to Cosmic Desk's native PIN dialog (M1.4).
 - `nvhttp.cpp` gains `GET`/`POST /cosmic/clipboard` on the HTTPS server for
-  bidirectional text clipboard sync, and bumps `CosmicVersion` from 2 to 3.
+  bidirectional text clipboard sync, bumps `CosmicVersion` to 4 for `wait=1`
+  long-polling on the clipboard GET, and adds a per-client-certificate owner
+  gate on both clipboard routes.
+- `stream.cpp`'s last-session-out path releases the clipboard owner and
+  resolves any parked long-poll waiter, so a client's parked GET completes at
+  stream end instead of running out its 20 s hold.
 - Deleted encoder/capture/gamepad paths with the existing `COSMIC MODIFICATION`
   markers: `cbs` (SPS/VPS injection), AMF, QSV, MediaFoundation, WGC capture
   backend, and ViGEm/inputtino gamepad emulation.

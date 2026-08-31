@@ -51,6 +51,14 @@ pacman -S --needed \
 `find_library(MINHOOK_LIBRARY libMinHook.a REQUIRED)`) comes from the
 `mingw-w64-ucrt-x86_64-MinHook` package above.
 
+**SDL 3.4 or newer is required** (the image clipboard needs SDL 3.4's Windows
+clipboard PNG support). Check with `pacman -Q mingw-w64-ucrt-x86_64-sdl3`; if it
+reports an older version, `pacman -Syu` and re-run the `pacman -S` line above. An
+older system SDL3 does not fail the build — CMake silently falls through to
+building the vendored `third-party/SDL` submodule instead (see `CMakeLists.txt`) —
+so a stale package does not surface as an error, only as the image clipboard not
+working.
+
 **If a download stalls** ("Operation too slow"), just run the same `pacman -S` command
 again — partial downloads are cached and resumed. The MSYS2 mirrors are occasionally
 slow; this is not a problem with the project.
@@ -140,6 +148,9 @@ SDL_Renderer's accelerated backends; `libgbm-dev` is for SDL's KMSDRM video driv
 `libasound2-dev`/`libpipewire-0.3-dev` are the ALSA and PipeWire audio backends
 (PulseAudio support instead comes from `libpulse-dev` in the M1 block below); and
 `libdbus-1-dev` is for SDL's screensaver-inhibit and desktop-portal integration.
+The vendored submodule is pinned at SDL 3.4.12 (see `docs/VENDOR.md`), which already
+satisfies the 3.4 floor the image clipboard needs — nothing extra to install for it
+on Linux.
 
 From M1 onward, also:
 
@@ -268,6 +279,7 @@ Two consequences worth knowing:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Could not find a package configuration file provided by "SDL3"` | Dependencies not installed, or you are in the wrong MSYS2 shell | Use the **UCRT64** shell; re-run the `pacman -S` line |
+| Copying an image does nothing over the clipboard sync route | The MSYS2 `sdl3` package is older than 3.4 (silently falls back to the vendored SDL, which is also older on a stale checkout) | `pacman -Syu` and re-run the `pacman -S` line; `git submodule update --init --recursive` to refresh `third-party/SDL` |
 | `cmake: command not found` in MSYS2 | You installed `cmake` instead of `mingw-w64-ucrt-x86_64-cmake`, or you are in the MSYS shell | Install the ucrt64 package and use the UCRT64 shell |
 | Build succeeds but the app fails to start with a missing DLL | Running the exe outside the MSYS2 environment | Run from the UCRT64 shell, or bundle DLLs (see `packaging/windows/`, milestone M6) |
 | A *bundled* exe fails at startup with a missing-DLL dialog (e.g. `avcodec-62.dll`) | The bundle was made on a machine with an incomplete MSYS2 install | Reinstall the section-3 packages (without `--needed` to restore deleted files), re-run `make-zip.ps1`; the script now fails loudly instead of writing an incomplete bundle |

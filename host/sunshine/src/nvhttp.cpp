@@ -6,13 +6,18 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <chrono>  // COSMIC MODIFICATION: TTL bookkeeping for the endpoint->cert-fingerprint cache.
 #include <cstdlib>  // COSMIC MODIFICATION: std::strtoull for GET /cosmic/clipboard's "since" query arg.
 #include <filesystem>
 #include <format>
+#include <map>  // COSMIC MODIFICATION: endpoint->cert-fingerprint cache backing store.
+#include <mutex>  // COSMIC MODIFICATION: guards the endpoint->cert-fingerprint cache.
 #include <string>
+#include <string_view>  // COSMIC MODIFICATION: raw-digest view in cosmic_cert_fingerprint().
 #include <utility>
 
 // lib includes
+#include <boost/algorithm/string.hpp>  // COSMIC MODIFICATION: case-insensitive Accept/Content-Type parsing for /cosmic/clipboard.
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -65,6 +70,115 @@ namespace nvhttp {
 
   crypto::cert_chain_t cert_chain;
 
+  // COSMIC MODIFICATION: per-connection client-certificate identity, used to
+  // gate GET/POST /cosmic/clipboard to the single paired client that started
+  // (via /launch or /resume) the currently active stream session -- see the
+  // comment above cosmic_clipboard_get further down. Defined here, right
+  // after cert_chain, because launch() (the earliest caller) needs it and
+  // C++ requires these to be defined before first use.
+
+  // SHA-256 fingerprint of a verified peer certificate, hex-encoded
+  // uppercase. The exact encoding is an implementation detail: the value is
+  // only ever compared against another value produced by this same
+  // function, never against an externally supplied string.
+  std::string cosmic_cert_fingerprint(X509 *x509) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    if (X509_digest(x509, EVP_sha256(), digest, &digest_len) != 1 || digest_len == 0) {
+      return {};
+    }
+
+    // util::hex_vec's default byte order is reversed, and its `--end` on an
+    // empty range is UB (see utility.h:300-341), so rev=true is required
+    // here -- not a style choice.
+    return util::hex_vec(std::string_view(reinterpret_cast<const char *>(digest), digest_len), true);
+  }
+
+  // COSMIC MODIFICATION: caches the fingerprint the verify hook
+  // (https_server.verify below) associated with a live TCP connection,
+  // keyed by that connection's remote endpoint. Entries are inserted only
+  // for successfully verified TLS connections, and a live connection
+  // re-touches its entry on every clipboard/launch/resume request
+  // (cosmic_request_cert_fingerprint refreshes last_used on every hit), so
+  // pruning on insert with a generous TTL bounds the map's size. A
+  // connection that only ever calls /serverinfo, /applist, /appasset or
+  // /cosmic/wallpaper never refreshes its entry and can be pruned while
+  // still open; that connection's later clipboard/launch/resume requests
+  // then simply miss the cache (cosmic_request_cert_fingerprint returns
+  // {}), which fails closed -- a clipboard request 404s and a launch/resume
+  // records an empty owner -- rather than misattributing the connection to
+  // someone else. The remote endpoint (address + port) uniquely identifies
+  // a live connection to this server for a given local endpoint; two
+  // simultaneous connections can collide on this key only on a multi-homed
+  // host (net::get_bind_address defaults to the wildcard address, see
+  // network.cpp:120-128) where a client deliberately reuses its source port
+  // against two different local addresses.
+  struct cosmic_cert_cache_entry_t {
+    std::string fingerprint;
+    std::chrono::steady_clock::time_point last_used;
+  };
+
+  std::mutex cosmic_cert_cache_mutex;
+  std::map<boost::asio::ip::tcp::endpoint, cosmic_cert_cache_entry_t> cosmic_cert_cache;
+
+  void cosmic_remember_client_cert(const boost::asio::ip::tcp::endpoint &endpoint, std::string fingerprint) {
+    // A default-constructed endpoint (port 0) is what Request::remote_endpoint()
+    // yields on error -- the key is genuinely unknown there, so skip it
+    // without touching the map.
+    if (endpoint.port() == 0) {
+      return;
+    }
+
+    constexpr auto kCosmicCertCacheTtl = std::chrono::minutes(10);
+    auto now = std::chrono::steady_clock::now();
+
+    std::lock_guard lock(cosmic_cert_cache_mutex);
+    std::erase_if(cosmic_cert_cache, [now, kCosmicCertCacheTtl](const auto &entry) {
+      return now - entry.second.last_used > kCosmicCertCacheTtl;
+    });
+
+    // COSMIC MODIFICATION: an empty fingerprint means verification produced
+    // no usable identity for this connection. Erase any stale entry for the
+    // endpoint instead of just returning -- otherwise a prior occupant's
+    // fingerprint could survive and later be misattributed to a different
+    // client that reuses the same source port.
+    if (fingerprint.empty()) {
+      cosmic_cert_cache.erase(endpoint);
+      return;
+    }
+
+    cosmic_cert_cache[endpoint] = cosmic_cert_cache_entry_t {std::move(fingerprint), now};
+  }
+
+  std::string cosmic_request_cert_fingerprint(const boost::asio::ip::tcp::endpoint &endpoint) {
+    if (endpoint.port() == 0) {
+      return {};
+    }
+
+    std::lock_guard lock(cosmic_cert_cache_mutex);
+    auto it = cosmic_cert_cache.find(endpoint);
+    if (it == cosmic_cert_cache.end()) {
+      return {};
+    }
+
+    it->second.last_used = std::chrono::steady_clock::now();
+    return it->second.fingerprint;
+  }
+
+  // COSMIC MODIFICATION: true when header's Accept value contains the
+  // case-insensitive literal "image/png". CosmicVersion 5 clients advertise
+  // PNG clipboard support this way; v1-v4 clients send "Accept: */*" or omit
+  // the header entirely, so this returns false for them -- see
+  // cosmic_clipboard_get, which uses that to keep an image entry from being
+  // served as text to an old client.
+  bool cosmic_request_accepts_png(const SimpleWeb::CaseInsensitiveMultimap &header) {
+    auto it = header.find("Accept");
+    if (it == header.end()) {
+      return false;
+    }
+    return boost::algorithm::icontains(it->second, "image/png"sv);
+  }
+
   class SunshineHTTPSServer: public SimpleWeb::ServerBase<SunshineHTTPS> {
   public:
     SunshineHTTPSServer(const std::string &certification_file, const std::string &private_key_file):
@@ -77,7 +191,11 @@ namespace nvhttp {
       context.use_private_key_file(private_key_file, boost::asio::ssl::context::pem);
     }
 
-    std::function<int(SSL *)> verify;
+    // COSMIC MODIFICATION: the hook now also receives the connection's
+    // remote endpoint, so the verified client certificate can be associated
+    // (via cosmic_remember_client_cert() above) with the connection that
+    // request handlers later identify via Request::remote_endpoint().
+    std::function<int(SSL *, const boost::asio::ip::tcp::endpoint &)> verify;
     std::function<void(std::shared_ptr<Response>, std::shared_ptr<Request>)> on_verify_failed;
 
   protected:
@@ -122,7 +240,11 @@ namespace nvhttp {
               return;
             }
             if (!ec) {
-              if (verify && !verify(session->connection->socket->native_handle())) {
+              // COSMIC MODIFICATION: pass the connection's remote endpoint
+              // through so the verify hook can record which client
+              // certificate authenticated this connection (see the comment
+              // on `verify` above).
+              if (verify && !verify(session->connection->socket->native_handle(), session->request->remote_endpoint())) {
                 this->write(session, on_verify_failed);
               } else {
                 this->read(session);
@@ -734,8 +856,10 @@ namespace nvhttp {
     // entries are in platf::display_names() order, the same order consumed by
     // apply_shortcut()'s Ctrl+Alt+Shift+F(1+i) handler in input.cpp. Version 2
     // adds CosmicWallpaperHash (PLAN D10a/b, milestone W1 item 2). Version 3
-    // adds the GET/POST /cosmic/clipboard routes.
-    tree.put("root.CosmicVersion", 3);
+    // adds the GET/POST /cosmic/clipboard routes. Version 4 adds wait=1
+    // long-polling to GET /cosmic/clipboard. Version 5 adds image/png
+    // clipboard payloads to both /cosmic/clipboard routes.
+    tree.put("root.CosmicVersion", 5);
     pt::ptree displays_tree;
     int index = 0;
     for (const auto &display : cosmic::displays::list_displays()) {
@@ -982,6 +1106,11 @@ namespace nvhttp {
 
     rtsp_stream::launch_session_raise(launch_session);
 
+    // COSMIC MODIFICATION: record this connection's client certificate as
+    // the clipboard owner now that this launch has succeeded (see the
+    // comment above cosmic_clipboard_get further down).
+    cosmic::clipboard::set_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()));
+
     // Stream was started successfully, we will revert the config when the app or session terminates
     revert_display_configuration = false;
   }
@@ -1075,6 +1204,13 @@ namespace nvhttp {
     tree.put("root.resume", 1);
 
     rtsp_stream::launch_session_raise(launch_session);
+
+    // COSMIC MODIFICATION: record this connection's client certificate as
+    // the clipboard owner now that this resume has succeeded. A reconnect
+    // (e.g. after a network blip) refreshes ownership to the reconnecting
+    // client's certificate rather than dropping it -- see the comment above
+    // cosmic_clipboard_get further down.
+    cosmic::clipboard::set_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()));
   }
 
   void cancel(resp_https_t response, req_https_t request) {
@@ -1170,18 +1306,56 @@ namespace nvhttp {
   // http_server -- which is the trust boundary that makes handing out
   // clipboard contents acceptable at all.
   //
-  // COSMIC MODIFICATION: the gate below is "any stream session is active"
-  // (rtsp_stream::session_count() > 0), not "the paired client that issued
-  // this request is the one streaming". rtsp_stream (host/sunshine/src/rtsp.h:56)
-  // exposes only a session count and no public mapping from an active
-  // session back to a client certificate, so per-cert matching isn't
-  // available without patching more of the vendored host. The resulting
-  // limitation: any paired client can read/write the clipboard while some
-  // other paired client is streaming.
+  // COSMIC MODIFICATION: the gate below adds a per-certificate owner check
+  // on top of "any stream session is active" (rtsp_stream::session_count() >
+  // 0). The owner is the SHA-256 fingerprint of the TLS client certificate
+  // that authenticated the connection behind the most recent successful
+  // /launch or /resume (cosmic::clipboard::set_owner, called from those
+  // handlers); it is cleared (cosmic::clipboard::clear_owner, called
+  // elsewhere) only when the LAST stream session on the host ends -- stream.cpp
+  // gates the clear on `if (--running_sessions == 0)`, not on the owner's own
+  // session ending. Consequence: with two concurrent sessions, a client that
+  // recorded ownership and then disconnected keeps clipboard access for as
+  // long as the other client is still streaming, because the counter never
+  // reaches zero. A request whose connection's certificate does not match
+  // the recorded owner -- or any request at all when no owner is recorded --
+  // is answered 404, the same as if clipboard sharing were disabled or no
+  // session were active (fail closed). Note that the `uniqueid` query
+  // parameter is NOT used for this and is not an auth token: any paired
+  // certificate can claim any uniqueid, so it cannot stand in for the
+  // certificate that actually authenticated the connection.
+  //
+  // COSMIC MODIFICATION: this narrows the old "any paired client" hole but
+  // does not close it. /resume does not verify that the requester is the
+  // client that owns the already-running session: while client A streams,
+  // a merely-paired client B can send its own GET /resume?rikey=...&rikeyid=
+  // ...&corever=1 and reach launch_session_raise() -> set_owner(B's
+  // fingerprint) without ever connecting over RTSP. Concretely,
+  // current_appid != 0 passes because proc_t::running() (process.cpp:272)
+  // reports an app as running either way: via the placebo flag when the
+  // running app is the hardcoded Desktop stub (process.cpp:252), or via a
+  // live child process for any real app (process.cpp:288) -- so the
+  // seizure works whatever A is actually streaming, not only Desktop.
+  // no_active_sessions is false so the display/encoder probe is skipped;
+  // corever >= 1 makes launch_session->rtsp_cipher truthy so the
+  // mandatory-encryption check is skipped; and make_launch_session()
+  // performs no check that B is the client A started the session with. So a
+  // paired client must now actively issue a /resume to take ownership --
+  // it is no longer enough to merely be paired while someone else streams
+  // -- but that is a narrower window, not an airtight boundary. Binding
+  // ownership to the actual RTSP session (rather than to whichever paired
+  // cert last called /launch or /resume) is a design change, tracked
+  // separately.
   void cosmic_clipboard_get(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
-    if (!cosmic::clipboard::enabled() || rtsp_stream::session_count() == 0) {
+    if (
+      !cosmic::clipboard::enabled() || rtsp_stream::session_count() == 0 ||
+      // COSMIC MODIFICATION: only the client certificate that started the
+      // active stream session may read the clipboard (see the comment
+      // above).
+      !cosmic::clipboard::is_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()))
+    ) {
       response->write(SimpleWeb::StatusCode::client_error_not_found);
       response->close_connection_after_response = true;
       return;
@@ -1194,9 +1368,78 @@ namespace nvhttp {
     // simply falls back to 0 rather than taking down the handler.
     std::uint64_t since = std::strtoull(since_str.c_str(), nullptr, 10);
 
-    std::string text;
+    // COSMIC MODIFICATION: CosmicVersion 5 -- whether this client's Accept
+    // header advertises image/png support. Captured by value below so a v1-4
+    // client (no image/png in Accept) never receives PNG bytes labelled as
+    // text/plain; see the mime checks in both branches below.
+    bool accepts_png = cosmic_request_accepts_png(request->header);
+
+    // COSMIC MODIFICATION: wait=1 long-polling (CosmicVersion 4). A client
+    // that has nothing new normally polls once a second, paying one TLS
+    // handshake per poll. When data is already available, fetch_or_park()
+    // returns true and this falls through to the ordinary fetch below,
+    // which responds exactly as it would without wait=1. Otherwise it parks
+    // the response (via cb, captured by value) for up to kClipboardHoldMs
+    // and returns without writing anything -- the callback completes the
+    // response later, from whichever of publish()/tick()/clear_waiters()
+    // first resolves this waiter.
+    if (get_arg(args, "wait", "0") == "1") {
+      bool available = cosmic::clipboard::fetch_or_park(
+        since,
+        cosmic::clipboard::kClipboardHoldMs,
+        [response, accepts_png](cosmic::clipboard::WaitResult result, std::uint64_t wait_seq, cosmic::clipboard::Mime wait_mime, std::string wait_bytes) {
+          if (result == cosmic::clipboard::WaitResult::Changed) {
+            SimpleWeb::CaseInsensitiveMultimap wait_headers;
+            wait_headers.emplace("X-Cosmic-Clipboard-Seq", std::to_string(wait_seq));
+            // COSMIC MODIFICATION: CosmicVersion 5.
+            wait_headers.emplace("X-Cosmic-Clipboard-Version", "5");
+            if (wait_mime == cosmic::clipboard::Mime::Png && !accepts_png) {
+              // COSMIC MODIFICATION: an old client cannot consume a PNG
+              // payload -- answer 204 (seq advances past it) instead of
+              // serving the image bytes as text/plain. Same
+              // close-before-write ordering as the Timeout branch below.
+              response->close_connection_after_response = true;
+              response->write(SimpleWeb::StatusCode::success_no_content, wait_headers);
+            } else {
+              wait_headers.emplace("Content-Type", cosmic::clipboard::content_type(wait_mime));
+              // string_view overload writes the content-length header from
+              // wait_bytes.size() and streams exactly that many bytes, so
+              // embedded NUL bytes in the clipboard text are not truncated
+              // (unlike a C-string based write) -- same reasoning as
+              // cosmic_wallpaper's write() above.
+              response->write(SimpleWeb::StatusCode::success_ok, wait_bytes, wait_headers);
+              response->close_connection_after_response = true;
+            }
+          } else if (result == cosmic::clipboard::WaitResult::Timeout) {
+            SimpleWeb::CaseInsensitiveMultimap wait_headers;
+            wait_headers.emplace("X-Cosmic-Clipboard-Seq", std::to_string(wait_seq));
+            // COSMIC MODIFICATION: CosmicVersion 5.
+            wait_headers.emplace("X-Cosmic-Clipboard-Version", "5");
+            // RFC 7230 section 3.3.2 forbids a Content-Length header on a
+            // 204 response. Simple-Web-Server's write_header()
+            // (server_http.hpp) only skips emitting one when
+            // close_connection_after_response is already true at write()
+            // time, so the flag has to be set here, before write() -- same
+            // reasoning as the immediate 204 path below.
+            response->close_connection_after_response = true;
+            response->write(SimpleWeb::StatusCode::success_no_content, wait_headers);
+          } else {
+            // Unavailable: clipboard sharing was turned off or the HTTPS
+            // server is shutting down while this response was parked.
+            response->write(SimpleWeb::StatusCode::client_error_not_found);
+            response->close_connection_after_response = true;
+          }
+        }
+      );
+      if (!available) {
+        return;
+      }
+    }
+
+    std::string bytes;
+    cosmic::clipboard::Mime mime = cosmic::clipboard::Mime::Text;
     std::uint64_t seq = 0;
-    bool changed = cosmic::clipboard::fetch(since, text, seq);
+    bool changed = cosmic::clipboard::fetch(since, bytes, mime, seq);
 
     // COSMIC MODIFICATION: cosmic::clipboard's sequence counter is
     // process-local and resets to 0 across a host restart. A client that
@@ -1209,20 +1452,31 @@ namespace nvhttp {
     // An unpublished store (seq == 0) has nothing to serve, so it falls
     // through to the ordinary 204 path below and the client resets its
     // cursor from the reported seq of 0.
+    // Mirrored by the stale-cursor check in src/hostglue/clipboard.cpp's
+    // fetch_or_park -- keep both predicates in sync.
     if (!changed && seq < since && seq > 0) {
-      changed = cosmic::clipboard::fetch(0, text, seq);
+      changed = cosmic::clipboard::fetch(0, bytes, mime, seq);
     }
 
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("X-Cosmic-Clipboard-Seq", std::to_string(seq));
+    // COSMIC MODIFICATION: CosmicVersion 5.
+    headers.emplace("X-Cosmic-Clipboard-Version", "5");
+
+    // COSMIC MODIFICATION: an old client cannot consume a PNG payload --
+    // answer 204 (seq advances past it) instead of serving the image bytes
+    // as text/plain. Same rule as the wait=1 Changed branch above.
+    if (changed && mime == cosmic::clipboard::Mime::Png && !accepts_png) {
+      changed = false;
+    }
 
     if (changed) {
-      headers.emplace("Content-Type", "text/plain; charset=utf-8");
+      headers.emplace("Content-Type", cosmic::clipboard::content_type(mime));
       // string_view overload writes the content-length header from
-      // text.size() and streams exactly that many bytes, so embedded NUL
+      // bytes.size() and streams exactly that many bytes, so embedded NUL
       // bytes in the clipboard text are not truncated (unlike a C-string
       // based write) -- same reasoning as cosmic_wallpaper's write() above.
-      response->write(SimpleWeb::StatusCode::success_ok, text, headers);
+      response->write(SimpleWeb::StatusCode::success_ok, bytes, headers);
     } else {
       // COSMIC MODIFICATION: RFC 7230 section 3.3.2 forbids a Content-Length
       // header on a 204 response. Simple-Web-Server's write_header()
@@ -1245,10 +1499,42 @@ namespace nvhttp {
   void cosmic_clipboard_post(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
-    if (!cosmic::clipboard::enabled() || rtsp_stream::session_count() == 0) {
+    if (
+      !cosmic::clipboard::enabled() || rtsp_stream::session_count() == 0 ||
+      // COSMIC MODIFICATION: only the client certificate that started the
+      // active stream session may write the clipboard (see the comment
+      // above cosmic_clipboard_get).
+      !cosmic::clipboard::is_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()))
+    ) {
       response->write(SimpleWeb::StatusCode::client_error_not_found);
       response->close_connection_after_response = true;
       return;
+    }
+
+    // COSMIC MODIFICATION: CosmicVersion 5 -- classify the POST body by the
+    // media type of its Content-Type header, ignoring any "; charset=..."
+    // parameter and case. Absent header, or a literal text/plain, or
+    // application/x-www-form-urlencoded (libcurl's default Content-Type for
+    // CURLOPT_POSTFIELDS -- what a v1-4 client, which predates this route
+    // distinguishing mime types, actually sends) are all treated as text.
+    // Anything else is rejected: this route only ever stores text or PNG.
+    cosmic::clipboard::Mime mime = cosmic::clipboard::Mime::Text;
+    auto content_type_it = request->header.find("Content-Type");
+    if (content_type_it != request->header.end()) {
+      std::string media = content_type_it->second;
+      auto semi = media.find(';');
+      if (semi != std::string::npos) {
+        media.resize(semi);
+      }
+      boost::algorithm::trim(media);
+      if (boost::algorithm::iequals(media, "image/png"sv)) {
+        mime = cosmic::clipboard::Mime::Png;
+      } else if (!boost::algorithm::iequals(media, "text/plain"sv) &&
+                 !boost::algorithm::iequals(media, "application/x-www-form-urlencoded"sv)) {
+        response->write(SimpleWeb::StatusCode::client_error_unsupported_media_type);
+        response->close_connection_after_response = true;
+        return;
+      }
     }
 
     // COSMIC MODIFICATION: Simple-Web-Server has already buffered the entire
@@ -1259,13 +1545,13 @@ namespace nvhttp {
     // been buffered rather than before. Acceptable only because the route
     // sits behind client-certificate verification. Never truncate: reject
     // outright instead.
-    if (request->content.size() > cosmic::clipboard::kMaxBytes) {
+    if (request->content.size() > cosmic::clipboard::max_bytes(mime)) {
       response->write(SimpleWeb::StatusCode::client_error_payload_too_large);
       response->close_connection_after_response = true;
       return;
     }
 
-    cosmic::clipboard::push_incoming(request->content.string());
+    cosmic::clipboard::push_incoming(mime, request->content.string());
     response->write(SimpleWeb::StatusCode::success_ok);
     response->close_connection_after_response = true;
   }
@@ -1305,7 +1591,9 @@ namespace nvhttp {
     http_server_t http_server;
 
     // Verify certificates after establishing connection
-    https_server.verify = [add_cert](SSL *ssl) {
+    // COSMIC MODIFICATION: added the `endpoint` parameter (see the comment
+    // on SunshineHTTPSServer::verify above).
+    https_server.verify = [add_cert](SSL *ssl, const boost::asio::ip::tcp::endpoint &endpoint) {
       crypto::x509_t x509 {
 #if OPENSSL_VERSION_MAJOR >= 3
         SSL_get1_peer_certificate(ssl)
@@ -1353,6 +1641,12 @@ namespace nvhttp {
       }
 
       verified = 1;
+
+      // COSMIC MODIFICATION: remember which client certificate authenticated
+      // this connection, so request handlers on this same connection can
+      // later be gated to that specific certificate (see
+      // cosmic_remember_client_cert above).
+      cosmic_remember_client_cert(endpoint, cosmic_cert_fingerprint(x509.get()));
 
       return verified;
     };
@@ -1438,11 +1732,28 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
+    // COSMIC MODIFICATION: resolve any GET /cosmic/clipboard?wait=1 request
+    // still parked before the HTTPS server (and the io_context its Response
+    // shared_ptrs are bound to) goes away underneath it.
+    cosmic::clipboard::clear_waiters();
+
     https_server.stop();
     http_server.stop();
 
     ssl.join();
     tcp.join();
+
+    // COSMIC MODIFICATION: a wait=1 request can be accepted and parked in
+    // the window between the clear_waiters() above and the server actually
+    // stopping; that Response then outlives https_server, and its shared_ptr
+    // deleter posts send_on_delete to an io_context that is being destroyed.
+    // Clear again now that ssl/tcp have joined, so anything parked in that
+    // window is resolved while both server threads are provably done.
+    // ACCEPTED residual gap: a waiter already extracted from g_waiters by a
+    // concurrent tick()/publish() but not yet destroyed is not reachable by
+    // either clear_waiters() call. Not closed here -- a shutdown-flag or
+    // drain-barrier mechanism is disproportionate for this narrow a window.
+    cosmic::clipboard::clear_waiters();
   }
 
   void erase_all_clients() {
