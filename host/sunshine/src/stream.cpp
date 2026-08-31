@@ -41,6 +41,11 @@ extern "C" {
 // implemented in clipboard.cpp in the cosmicdesk target, not in cosmic_host.
 // stream.cpp needs it to release clipboard session state at teardown.
 #include "hostglue/clipboard.h"
+// COSMIC MODIFICATION: file-transfer receiver bridge. Same pattern as
+// hostglue/clipboard.h just above: declared in the app's src/ tree,
+// implemented in filerecv.cpp in the cosmicdesk target, not in cosmic_host.
+// stream.cpp needs it to abort any in-flight transfer at teardown.
+#include "hostglue/filerecv.h"
 
 constexpr int IDX_START_A = 0;
 constexpr int IDX_START_B = 1;
@@ -1956,6 +1961,11 @@ namespace stream {
         // owner check answers 404 instead of re-parking.
         cosmic::clipboard::clear_owner();
         cosmic::clipboard::clear_waiters();
+        // COSMIC MODIFICATION: a partial ".part" file must not outlive the
+        // session that started it (PLAN FILE_TRANSFER_PLAN.md, F1 -- "No
+        // resume across sessions"). The transfer id dies with the session,
+        // same lifetime as the clipboard owner cleared just above.
+        cosmic::filerecv::abort_all();
 
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
         if (proc::proc.running()) {

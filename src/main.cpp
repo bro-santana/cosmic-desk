@@ -7,6 +7,7 @@
 #include "app/autostart.h"
 #include "app/clipimage.h"
 #include "app/clipsync.h"
+#include "app/filesync.h"
 #include "app/presence.h"
 #include "app/settings.h"
 #include "app/service_ctrl.h"
@@ -14,6 +15,7 @@
 #include "app/state.h"
 #include "app/wallcache.h"
 #include "hostglue/clipboard.h"
+#include "hostglue/filerecv.h"
 #include "hostglue/host.h"
 #include "hostglue/pin_bridge.h"
 #include "hostglue/wallpaper.h"
@@ -24,6 +26,7 @@
 #include "ui/scale.h"
 #include "ui/theme.h"
 #include "ui/tray.h"
+#include "ui/transfer_overlay.h"
 #include "ui/viewer_topbar.h"
 #include "viewer/decoder.h"
 #include "viewer/input.h"
@@ -38,6 +41,7 @@
 
 #include <cstdio>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -56,6 +60,16 @@ namespace {
 // (docs/UI_MIGRATION.md U0).
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
+
+// Same clock and unit as cosmic::filesync::Progress::updated_ms (steady_clock
+// milliseconds, per filesync.h), so the transfer overlay's "did this change
+// recently" test can subtract a worker timestamp and a local one directly.
+uint64_t NowMs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 
 // The vendored host resolves SUNSHINE_ASSETS_DIR="assets" (HLSL/GL shaders)
 // relative to the CWD, and autostart/menu launches don't set it; chdir makes
@@ -462,13 +476,15 @@ int main(int argc, char** argv) {
 
     g_session = std::make_unique<cosmic::viewer::Session>(settings);
 
-    // Seed the clipboard-enabled mirror before starting the host: start()
-    // below also does this (host.cpp), but it can return early (e.g. a
-    // host.conf write failure) before reaching that line, and the app keeps
-    // running in that case (see hosting_ok below) -- the viewer role must
-    // still honour the user's share_clipboard opt-out on that path. Setting
-    // it here too is idempotent with the one inside start().
+    // Seed the clipboard-enabled and filerecv-enabled mirrors before starting
+    // the host: start() below also does this (host.cpp), but it can return
+    // early (e.g. a host.conf write failure) before reaching that line, and
+    // the app keeps running in that case (see hosting_ok below) -- the viewer
+    // role must still honour the user's share_clipboard/share_files opt-outs
+    // on that path. Setting them here too is idempotent with the ones inside
+    // start().
     cosmic::clipboard::set_enabled(settings.share_clipboard);
+    cosmic::filerecv::set_enabled(settings.share_files);
 
     const bool hosting_ok = cosmic::hostglue::start(settings);
     if (!hosting_ok) {
@@ -605,6 +621,17 @@ int main(int argc, char** argv) {
     // Tracks whether the clipsync worker is running so start/stop is driven
     // by the session state (Streaming) exactly once per transition.
     bool clipsync_running = false;
+
+    // File transfer (drag-and-drop, wired below): mirrors clipsync_running
+    // for the filesync worker's start/stop.
+    bool filesync_running = false;
+    // Local notice for a drop the worker never sees (a rejected folder or a
+    // path that no longer exists), plus the steady-clock timestamp it was set
+    // at -- same clock and unit as cosmic::filesync::Progress::updated_ms, so
+    // the Viewing draw branch's overlay-visibility test can compare the two
+    // directly. Cleared once it has lingered its 3 s.
+    std::string transfer_local_message;
+    uint64_t transfer_local_message_ms = 0;
 #ifdef _WIN32
     // Last-seen Windows clipboard sequence number (see the poll below).
     DWORD last_clip_seq = 0;
@@ -865,6 +892,68 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Drag-and-drop upload (Wave F1 of docs/FILE_TRANSFER_PLAN.md).
+            // No SDL_SetEventEnabled call is needed here: unlike SDL2 (which
+            // required SDL_EventState), SDL3 has drop events on by default and
+            // registers the Win32 OLE drop target at window creation (see
+            // IsAcceptingDragAndDrop / PrepareDragAndDropSupport,
+            // third-party/SDL/src/video/SDL_video.c:2218-2231).
+            if (event.type == SDL_EVENT_DROP_FILE) {
+                // event.drop.data is SDL-owned temporary memory (UTF-8);
+                // copy it out immediately, and null-check it -- SDL_Event
+                // unions leave no guarantee it survives past this iteration.
+                const char* drop_data = event.drop.data;
+                const std::string dropped_path = drop_data != nullptr ? drop_data : "";
+                // A drop is only accepted while a stream is actually live;
+                // anything else (e.g. a drop onto the Bridge window, or one
+                // that lands mid-teardown) is ignored silently, same as the
+                // clipboard path above ignores updates outside a session.
+                if (!dropped_path.empty() && mode == cosmic::AppMode::Viewing &&
+                    g_session->status().state == cosmic::viewer::ViewerState::Streaming) {
+                    std::error_code ec;
+                    if (!std::filesystem::exists(dropped_path, ec)) {
+                        transfer_local_message = "File not found";
+                        transfer_local_message_ms = NowMs();
+                    } else if (std::filesystem::is_directory(dropped_path, ec)) {
+                        // Rejected without ever calling enqueue(): the worker
+                        // only understands single files (filesync.h).
+                        transfer_local_message = "Folders cannot be sent";
+                        transfer_local_message_ms = NowMs();
+                    } else if (!cosmic::filesync::enqueue(dropped_path)) {
+                        // enqueue() can lose the race with the lifecycle
+                        // block's start() on the very frame a session first
+                        // reads Streaming: it takes the "worker not running"
+                        // branch and sets a sticky Progress::error, but
+                        // start() then runs later this frame and resets the
+                        // whole snapshot, wiping that error along with it.
+                        // Set the local message too so the user still sees
+                        // something after the reset.
+                        //
+                        // enqueue() also fails when the queue already holds
+                        // kMaxQueued paths, and that error is just as
+                        // sticky-but-erasable: it stays hidden while a
+                        // transfer is active (transfer_local_message outranks
+                        // it in the overlay's line precedence) and would be
+                        // wiped by the very next start(). Distinguish the two
+                        // causes with filesync_running (in scope here, kept
+                        // current by the lifecycle block below) rather than
+                        // trust the worker's own error, since "try again"
+                        // is wrong advice for a full queue -- the retry just
+                        // fails again -- and it would bury the live byte
+                        // counter of the upload still running.
+                        if (!filesync_running) {
+                            transfer_local_message = "Not ready - try that drop again.";
+                        } else {
+                            transfer_local_message = "Too many files queued.";
+                        }
+                        transfer_local_message_ms = NowMs();
+                    }
+                }
+            }
+            // SDL_EVENT_DROP_BEGIN/DROP_COMPLETE need no handling: a drop of
+            // several files arrives as one SDL_EVENT_DROP_FILE per file, and
+            // each simply enqueues on its own above.
+
             // While streaming, forward input to the host before ImGui sees it
             // (plan M2.6). Consumed events never reach ImGui; the top bar keeps
             // working because ImGui claims mouse capture when the cursor is
@@ -972,6 +1061,10 @@ int main(int argc, char** argv) {
         // Expire any GET /cosmic/clipboard?wait=1 request parked past its
         // hold time (no timer/thread backs this -- the main loop drives it).
         cosmic::clipboard::tick();
+
+        // Nothing else drives filerecv: expires a transfer abandoned longer
+        // than kIdleTimeoutMs and deletes its partial file.
+        cosmic::filerecv::tick();
 
         // Clipboard-in: drain both inbound paths every frame regardless of
         // which one is realistically active on this machine (viewing ->
@@ -1147,6 +1240,26 @@ int main(int argc, char** argv) {
             cosmic::clipsync::stop();
             clipsync_running = false;
         }
+        // Filesync lifecycle: same state-driven start/stop as clipsync above,
+        // but with NO settings gate -- CRITICAL DIFFERENCE from clipsync,
+        // which additionally requires cosmic::clipboard::enabled(). share_files
+        // gates the RECEIVING host's /cosmic/file routes; sending here is
+        // always the result of an explicit, user-initiated drag-and-drop, and
+        // it is the receiving host's own toggle that decides whether anything
+        // the drop enqueues actually lands. So this starts whenever the state
+        // is Streaming and stops whenever it is not, unconditionally.
+        if (session_status.state == cosmic::viewer::ViewerState::Streaming &&
+            !filesync_running) {
+            const int https_port = session_status.port_used - 5;
+            if (!connecting_address.empty() && https_port > 0) {
+                cosmic::filesync::start(connecting_address, https_port);
+                filesync_running = true;
+            }
+        } else if (filesync_running &&
+                   session_status.state != cosmic::viewer::ViewerState::Streaming) {
+            cosmic::filesync::stop();
+            filesync_running = false;
+        }
         // Once the session settles (Idle/Failed), the LINKING... card clears:
         // the connect either finished (Streaming keeps it) or gave up.
         if (session_status.state == cosmic::viewer::ViewerState::Idle ||
@@ -1305,6 +1418,45 @@ int main(int argc, char** argv) {
                 cosmic::ui::draw_topbar(&topbar_state, viewer_fullscreen,
                                         monitors, session_status.active_display);
 
+            // Transfer overlay (Wave F1 of docs/FILE_TRANSFER_PLAN.md): polled
+            // once a frame and translated into the plain struct the ui layer
+            // accepts (same bridging as MonitorInfo above -- the ui layer must
+            // not include app/filesync.h). Shown while a file is uploading, or
+            // for a few seconds after the worker's or a local rejection's
+            // timestamp, so a finished/failed transfer does not vanish
+            // instantly.
+            {
+                const cosmic::filesync::Progress transfer_progress = cosmic::filesync::progress();
+                const uint64_t now_ms = NowMs();
+                constexpr uint64_t kTransferLingerMs = 3000;
+                const bool worker_recent =
+                    now_ms - transfer_progress.updated_ms < kTransferLingerMs;
+                const bool local_message_recent =
+                    !transfer_local_message.empty() &&
+                    now_ms - transfer_local_message_ms < kTransferLingerMs;
+                if (!local_message_recent) {
+                    transfer_local_message.clear();
+                }
+                if (transfer_progress.active || worker_recent || local_message_recent) {
+                    cosmic::ui::TransferStatus transfer_status;
+                    transfer_status.active = transfer_progress.active;
+                    transfer_status.filename = transfer_progress.filename;
+                    transfer_status.transferred = transfer_progress.transferred;
+                    transfer_status.total = transfer_progress.total;
+                    transfer_status.queued = transfer_progress.queued;
+                    transfer_status.done = transfer_progress.done;
+                    // Suppress the sticky error while a transfer is active:
+                    // a queue-full enqueue() rejection sets it without
+                    // touching `active`, and the worker's per-chunk publish
+                    // never clears it, so left unconditional it would hide
+                    // the live byte counter for the rest of the upload.
+                    transfer_status.error =
+                        transfer_progress.active ? std::string() : transfer_progress.error;
+                    transfer_status.message = transfer_local_message;
+                    cosmic::ui::draw_transfer_overlay(transfer_status);
+                }
+            }
+
             // No centred overlay: it sat on top of the remote desktop for the
             // whole session and swallowed mouse input wherever it covered
             // (WantCaptureMouse gates forwarding). Ending the session lives on
@@ -1385,6 +1537,7 @@ int main(int argc, char** argv) {
         bridge_input.autostart = settings.autostart;
         bridge_input.share_wallpaper = settings.share_wallpaper;
         bridge_input.share_clipboard = settings.share_clipboard;
+        bridge_input.share_files = settings.share_files;
         bridge_input.service_mode = service_mode;
         bridge_input.paired_count = cosmic::hostglue::paired_client_count();
         bridge_input.time_s = static_cast<double>(SDL_GetTicks()) / 1000.0;
@@ -1614,6 +1767,14 @@ int main(int argc, char** argv) {
             // honors the change without a restart (mirrors SetShareWallpaper).
             cosmic::clipboard::set_enabled(bridge_result.action.on);
         } else if (bridge_result.action.kind ==
+                   cosmic::ui::bridge::BridgeAction::SetShareFiles) {
+            settings.share_files = bridge_result.action.on;
+            settings_dirty = true;
+            // Apply immediately so the running host's /cosmic/file routes
+            // honor the change without a restart (mirrors SetShareClipboard).
+            // Disabling also aborts a transfer in progress (see filerecv.h).
+            cosmic::filerecv::set_enabled(bridge_result.action.on);
+        } else if (bridge_result.action.kind ==
                    cosmic::ui::bridge::BridgeAction::CloseSettings) {
             bridge_state.settings_open = false;
             // Settings edits save on the close transition (docs/UI_MIGRATION.md
@@ -1650,11 +1811,16 @@ int main(int argc, char** argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     cosmic::hostglue::stop();
+    // The host is stopped, so no handler thread can still be writing; this
+    // deletes any .part left by a transfer that was in flight at quit.
+    cosmic::filerecv::abort_all();
     // Stop the presence poller (U6) and join its worker before SDL_Quit.
     cosmic::presence::stop();
     // Stop the clipsync worker (idempotent; safe if never started) so it
     // cannot outlive SDL.
     cosmic::clipsync::stop();
+    // Same for the filesync worker.
+    cosmic::filesync::stop();
     cosmic::single_instance::release();
     SDL_Quit();
 

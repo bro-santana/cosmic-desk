@@ -46,6 +46,9 @@ struct Settings {
     // Host-side opt-out for text clipboard sync via GET/POST /cosmic/clipboard
     // (bidirectional clipboard sync); default on.
     bool share_clipboard = true;
+    // Host-side opt-out for receiving files dropped by a connected viewer via
+    // /cosmic/file/* (client-to-host file upload); default on.
+    bool share_files = true;
     std::vector<SavedHost> hosts;
 
     // Adds the host if unknown, else updates it. Insert appends (nickname="",

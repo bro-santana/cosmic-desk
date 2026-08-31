@@ -99,14 +99,16 @@ Stock Moonlight clients ignore the unknown elements and still pair and stream; a
 stock Sunshine host the hash is simply absent, so the client shows no wallpaper.
 
 (The `<CosmicVersion>2</CosmicVersion>` shown above is the version wallpaper sync itself
-requires; the clipboard-sync extension below bumps the live value to `5`. The example is
-unchanged because wallpaper sync's own contract still only needs version 2.)
+requires; the clipboard-sync extension below bumps the live value to `5`, and the
+file-transfer extension further below bumps it again to `6`. The example is unchanged
+because wallpaper sync's own contract still only needs version 2.)
 
 ## Cosmic extension: clipboard sync
 
 The viewer and host share the clipboard while a stream is running, in both directions.
-Both text and PNG images are supported; there is still no file transfer and no
-paste-as-typing. `/serverinfo` bumps to:
+Both text and PNG images are supported; there is no paste-as-typing, and files are
+not clipboard's problem — they ride the separate file-transfer extension further
+down. `/serverinfo` bumps to:
 
 ```xml
 <CosmicVersion>5</CosmicVersion>
@@ -115,8 +117,11 @@ paste-as-typing. `/serverinfo` bumps to:
 Version 3 is what added the two routes below; version 4 added `wait=1` long-polling on
 the GET route and the per-certificate owner gate; version 5 added image (PNG) support —
 a second `Content-Type`, larger size cap, `Accept`-based negotiation, and the
-`X-Cosmic-Clipboard-Version` response header, all described further down. Nothing else
-about `/serverinfo` changes.
+`X-Cosmic-Clipboard-Version` response header, all described further down; version 6
+added the `/cosmic/file/*` file-transfer routes described in the next section. The live
+`CosmicVersion` is therefore `6`, but the example above is unchanged because clipboard
+sync's own contract still only needs version 5 — nothing else about `/serverinfo`
+changes.
 
 Both routes live **only on the client-certificate-authenticated HTTPS port**
 (`port_base − 5`, default 47984), like `/cosmic/wallpaper` above — there is no plain-HTTP
@@ -260,6 +265,174 @@ Three limitations are worth stating plainly rather than burying:
   attempted, both when capturing a local copy and when applying one received from the
   peer — a small compressed file can otherwise decode to a huge allocation (a
   "decompression bomb"), and this bounds that regardless of the file's on-wire size.
+
+## Cosmic extension: file transfer
+
+The viewer can send files to the host while a stream is running, by dropping them onto
+the viewer window. Direction is one-way — **client → host only** — and files only: a
+dropped folder is rejected client-side, with a visible message and no request ever sent
+to the host. Only one upload is active host-side at a time; the client queues the rest
+and sends them one after another. There is no resume across sessions — a transfer id
+lives only as long as the streaming session that started it, and ending that session
+kills any transfer in progress along with its partial file (see Lifecycle below). A
+host → client direction (the user copies a file on the host desktop and the viewer pulls
+it down) is designed on paper but not shipped — see `docs/FILE_TRANSFER_PLAN.md`'s F2
+section.
+
+`/serverinfo`'s `CosmicVersion` bumps to `6`:
+
+```xml
+<CosmicVersion>6</CosmicVersion>
+```
+
+Every success response on the four routes below carries `X-Cosmic-File-Version: 6`;
+`begin`'s success response also carries `X-Cosmic-File-Id: <id>`, the transfer id the
+client must echo on every subsequent `chunk`/`end`/`abort` call for that file. A 404 on
+any of the four carries neither header, the same convention as the clipboard routes.
+
+All four routes live **only on the client-certificate-authenticated HTTPS port**
+(`port_base − 5`, default 47984), like `/cosmic/wallpaper` and `/cosmic/clipboard`
+above — there is no plain-HTTP equivalent:
+
+| Route | Condition | Status | Response |
+|---|---|---|---|
+| `POST /cosmic/file/begin?name=<pct-encoded utf-8>&size=<bytes>` | sharing on, stream active, owning cert, name accepted, declared size ≤ free space on the destination volume | 200 | `X-Cosmic-File-Id: <id>`, `X-Cosmic-File-Version: 6` |
+| `POST /cosmic/file/begin?name=<pct-encoded utf-8>&size=<bytes>` | sharing off, no stream active, or the requester is not the recorded owner | 404 | no header |
+| `POST /cosmic/file/begin?name=<pct-encoded utf-8>&size=<bytes>` | a transfer is already active | 409 | — |
+| `POST /cosmic/file/begin?name=<pct-encoded utf-8>&size=<bytes>` | declared size exceeds free space on the destination volume | 507 | — |
+| `POST /cosmic/file/begin?name=<pct-encoded utf-8>&size=<bytes>` | `name` is empty, or the sanitizer refuses it (a reserved device name, or 999 collision-suffix attempts exhausted) | 400 | — |
+| `POST /cosmic/file/begin?name=<pct-encoded utf-8>&size=<bytes>` | the destination directory can't be resolved or created, the free-space check itself fails, or the `.part` file can't be opened | 500 | — |
+| `POST /cosmic/file/chunk?id=<id>&offset=<bytes>` (raw bytes body, ≤ 8 MiB) | sharing on, stream active, owning cert, `offset` equals bytes received so far | 200 | `X-Cosmic-File-Version: 6` |
+| `POST /cosmic/file/chunk?id=<id>&offset=<bytes>` (raw bytes body, ≤ 8 MiB) | gate fails, or `id` matches no active transfer | 404 | no header |
+| `POST /cosmic/file/chunk?id=<id>&offset=<bytes>` (raw bytes body, ≤ 8 MiB) | `offset` ≠ bytes received so far, or this chunk would push received bytes past the declared size — chunks must arrive strictly sequentially | 409 | — |
+| `POST /cosmic/file/chunk?id=<id>&offset=<bytes>` (raw bytes body, ≤ 8 MiB) | body exceeds 8 MiB | 413 | — |
+| `POST /cosmic/file/chunk?id=<id>&offset=<bytes>` (raw bytes body, ≤ 8 MiB) | writing the chunk to the `.part` file failed (the transfer is aborted and its partial deleted) | 500 | — |
+| `POST /cosmic/file/end?id=<id>` | sharing on, stream active, owning cert, received bytes equal the declared size | 200 | `X-Cosmic-File-Version: 6` |
+| `POST /cosmic/file/end?id=<id>` | gate fails, or `id` matches no active transfer | 404 | no header |
+| `POST /cosmic/file/end?id=<id>` | received bytes ≠ declared size | 409 | — |
+| `POST /cosmic/file/end?id=<id>` | flushing, closing, or renaming the `.part` file into place failed (partial deleted either way) | 500 | — |
+| `POST /cosmic/file/abort?id=<id>` | sharing on, stream active, owning cert, `id` matches the active transfer | 200 | `X-Cosmic-File-Version: 6` |
+| `POST /cosmic/file/abort?id=<id>` | gate fails, or `id` matches no active transfer | 404 | no header |
+
+The 500 outcome on `begin`, `chunk`, and `end` — an I/O failure resolving the
+destination, opening the `.part` file, writing to it, flushing it, or renaming it into
+place — is not in `docs/FILE_TRANSFER_PLAN.md`'s route table; it exists in the shipped
+implementation and is documented here rather than silently dropped. The plan's table
+also lists `size` alongside `name` in `begin`'s 400 case ("bad name/size"); as
+implemented, 400 is only ever a name problem — an empty `name` argument, a refused
+device name, or 999 exhausted collision suffixes. A garbage or oversized `size` value
+either parses to `0` or is rejected as `507`, never `400`.
+
+**The gate** is the same three conditions as the clipboard routes above: the
+`share_files` feature toggle on, a streaming session active
+(`rtsp_stream::session_count() > 0`), and the requesting connection's client-certificate
+fingerprint equal to the recorded owner. There is no separate owner store for file
+transfer — the owner store lives in `cosmic::clipboard` (the fingerprint recorded by the
+most recent successful `/launch` or `/resume`, described in the clipboard section above)
+and these four routes simply reuse it, verbatim, as the generic stream-owner gate.
+
+**Why the protocol is chunked at the application layer.** Simple-Web-Server, the host's
+HTTP library, buffers an entire POST body into memory before the handler runs and offers
+no streaming-read hook — the buffer-size limit is server-wide and cannot be tightened
+for one route alone. The 8 MiB cap on a chunk body is enforced only after
+Simple-Web-Server has already buffered it in full, so it bounds what a cooperating client
+sends but not what a hostile owner can make the host allocate; the client-certificate
+gate is the only bound on that. The host rejects a chunk over 8 MiB with 413, and the
+client's 4 MiB chunks keep normal operation comfortably under the cap. Unlike the
+clipboard routes above, these four routes deliberately do **not** close the connection
+after each response: the client drives a whole file's `begin` → `chunk` × N → `end`
+sequence over one reused curl easy handle, so leaving the connection open lets the entire
+transfer ride a single TLS connection instead of paying for a fresh handshake on every 4
+MiB chunk. The client also suppresses `Expect: 100-continue` on its chunk requests: libcurl
+adds that header on its own to any POST body over 1024 bytes, but Simple-Web-Server never
+answers a `100 Continue`, so leaving it in place would stall every chunk for a full second
+regardless of LAN speed.
+
+**Destination and filename safety.** Files land in `Downloads\CosmicDesk\` of the
+console-session user, resolved fresh on every `begin` (a transfer is rare enough that the
+extra syscalls do not matter). The client-supplied name is never trusted as-is;
+`sanitize_filename` reduces it to a safe basename, in order:
+
+1. basename only — everything up to and including the last `/` or `\` is dropped;
+2. control characters and the characters `<>:"/\|?*` are replaced with `_` — `:` in
+   particular, because it is the NTFS alternate-data-stream separator (`file.txt:zone`);
+3. trailing dots and spaces are stripped;
+4. an empty result becomes `file`;
+5. the name is capped at 200 bytes, cut on a UTF-8 code-point boundary — never splitting
+   a multi-byte character — while preserving a short trailing extension when there is
+   one;
+6. reserved Windows device names — `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–
+   `LPT9`, case-insensitive, with or without an extension — are refused outright. This is
+   the one case where the sanitizer's empty-string return means "refuse the upload," not
+   "fall back to `file`."
+
+The host never overwrites an existing file: a name collision picks ` (2)`, ` (3)`, … just
+before the extension, the same convention Explorer uses. What actually enforces this is a
+non-replacing move (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) at `end` — not the
+existence check that first picks the candidate name, which only narrows the search and
+cannot by itself close the race, since anything could create the chosen name between the
+check and the write. The file is written to `<final>.part` as bytes arrive and renamed to
+`<final>` only on `end`; any failure along the way — a bad chunk write, a size mismatch, a
+failed rename — deletes the `.part` rather than leaving it behind.
+
+Documented caveat: in service/SYSTEM mode, `FOLDERID_Downloads` would resolve to the
+SYSTEM profile, so the destination is instead resolved from the console session's user
+profile path recorded in the registry, plus `\Downloads`. A user who has redirected their
+own Downloads folder elsewhere is **not** honoured in this mode.
+
+**The inherited ownership caveat applies here too, and matters more for a route that
+writes to disk**, so it is restated plainly rather than left implicit. As described
+above, ownership follows whichever paired certificate most recently called `/launch` or
+`/resume` — it is not bound to the live RTSP session — so a second paired client can call
+`/resume` and take over as owner without ever joining the stream, and from there upload
+files onto the console user's disk. See the fuller discussion in the clipboard section
+above rather than repeating it here; what mitigates it specifically for file transfer is
+the never-overwrite rule, the dedicated `Downloads\CosmicDesk\` subfolder, and the
+filename sanitizer above — not anything tied to the RTSP session.
+
+**Lifecycle.** A transfer idle for longer than 90 s is aborted and its partial file
+deleted by the host's per-frame tick. The same abort-and-delete happens when
+`share_files` is switched off, when the last streaming session on the host ends (the same
+`stream.cpp` teardown block that clears the clipboard owner), and at host shutdown — no
+partial file or open handle outlives the session that started it.
+
+**The `share_files` setting** (`cosmic.json`, default on; exposed in Bridge Settings as
+"Share files") gates the **host-side routes** on the machine it is set on. Sending by
+drag-and-drop is always allowed on the client — nothing there asks permission — because
+it is the *receiving* host's own toggle that consents to writing files to its disk.
+
+**Client behaviour.** A drop uploads one file at a time: `begin` → a loop of `chunk`
+calls at sequential offsets over one reused curl easy handle, 4 MiB per chunk → `end`.
+Once `begin` has returned a transfer id, any later HTTP or curl-level failure aborts that
+file — a best-effort `abort` POST is sent so the host drops its partial immediately
+instead of waiting out the 90 s idle timeout — surfaces an error, and the client moves on
+to the next queued file. A failed `begin` itself has no id yet to abort, so it only
+surfaces its error before the client moves on the same way. Ending the stream session
+cancels an in-flight transfer without sending `abort`: the connection is going away with
+the session regardless, and the host's own stream-teardown path (above) already deletes
+the partial, so there is nothing to gain by waiting on one more request while the session
+tears down.
+
+Backward compatibility needs no capability latch, but a 404 here does not mean what it
+seems: Sunshine registers only
+`https_server.default_resource["GET"] = not_found<SunshineHTTPS>` (`nvhttp.cpp`), and
+Simple-Web-Server's `find_resource` (`server_http.hpp`) returns without writing anything
+when a request's method has no default resource, so a `POST /cosmic/file/begin` sent to
+a stock or pre-v6 host gets no HTTP response at all — the connection simply closes. A real
+404 on these routes therefore means a v6 Cosmic host whose gate is closed — `share_files`
+off, no streaming session, or a non-owner certificate — not the absence of the routes. The
+client's positive proof of support is a 200 on `begin` carrying a non-empty
+`X-Cosmic-File-Id`; a 200 without one is rejected as unsupported, the same trust rule
+already documented for `X-Cosmic-Clipboard-Seq` above. The client treats a `begin` whose
+connection closes with no HTTP response at all — libcurl's `CURLE_GOT_NOTHING` — as the
+same signal, surfacing the shipped "Host does not support file transfer" message; this
+applies to the `begin` request only — an unreachable host, a TLS failure, a timeout, or a
+connection dropped mid-transfer still surface the generic "Transfer failed", since none of
+those are capability signals. `docs/FILE_TRANSFER_PLAN.md`'s note here assumed a plain
+404; as implemented, the signal is the connection closing with no response at all, caught
+via `CURLE_GOT_NOTHING` rather than a status code. Unlike clipboard sync, there is nothing
+to probe for in advance — the client only ever speaks these routes when the user actually
+drops a file.
 
 ## Cosmic convention: mid-stream monitor switching
 

@@ -99,10 +99,13 @@ comment):
 - `nvhttp.cpp` gains `GET`/`POST /cosmic/clipboard` on the HTTPS server for
   bidirectional text clipboard sync, bumps `CosmicVersion` to 4 for `wait=1`
   long-polling on the clipboard GET, and adds a per-client-certificate owner
-  gate on both clipboard routes.
+  gate on both clipboard routes. It also gains the four `POST /cosmic/file/*`
+  routes (`begin`/`chunk`/`end`/`abort`) for client-to-host file transfer,
+  reusing the same owner gate, and bumps `CosmicVersion` to 6.
 - `stream.cpp`'s last-session-out path releases the clipboard owner and
   resolves any parked long-poll waiter, so a client's parked GET completes at
-  stream end instead of running out its 20 s hold.
+  stream end instead of running out its 20 s hold; the same path now also
+  aborts any in-flight file transfer and deletes its partial file.
 - Deleted encoder/capture/gamepad paths with the existing `COSMIC MODIFICATION`
   markers: `cbs` (SPS/VPS injection), AMF, QSV, MediaFoundation, WGC capture
   backend, and ViGEm/inputtino gamepad emulation.

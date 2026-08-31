@@ -4,6 +4,7 @@
 
 #include "hostglue/host.h"
 #include "hostglue/clipboard.h"
+#include "hostglue/filerecv.h"
 #include "hostglue/wallpaper.h"
 
 // Vendored Sunshine headers. Only this TU depends on them; host.h stays
@@ -248,11 +249,12 @@ bool start(const Settings &settings) {
     return false;
   }
 
-  // Must be set before nvhttp's /serverinfo, /cosmic/wallpaper and
-  // /cosmic/clipboard handlers can be reached, since all three consult the
-  // corresponding provider.
+  // Must be set before nvhttp's /serverinfo, /cosmic/wallpaper,
+  // /cosmic/clipboard and /cosmic/file handlers can be reached, since all
+  // four consult the corresponding provider.
   cosmic::wallpaper::set_enabled(settings.share_wallpaper);
   cosmic::clipboard::set_enabled(settings.share_clipboard);
+  cosmic::filerecv::set_enabled(settings.share_files);
 
   mail::man = std::make_shared<safe::mail_raw_t>();
 

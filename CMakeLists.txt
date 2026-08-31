@@ -111,6 +111,7 @@ add_executable(cosmicdesk
     src/app/settings.cpp
     src/app/wallcache.cpp
     src/app/clipsync.cpp
+    src/app/filesync.cpp
     src/app/clipimage.cpp
     src/app/service_ctrl.cpp
     src/app/single_instance.cpp
@@ -119,11 +120,13 @@ add_executable(cosmicdesk
     src/hostglue/displays.cpp
     src/hostglue/wallpaper.cpp
     src/hostglue/clipboard.cpp
+    src/hostglue/filerecv.cpp
     src/ui/pin_dialog.cpp
     src/ui/scale.cpp
     src/ui/theme.cpp
     src/ui/tray.cpp
     src/ui/viewer_topbar.cpp
+    src/ui/transfer_overlay.cpp
     src/ui/fonts.cpp
     src/ui/bridge/bridge.cpp
     src/ui/bridge/panels.cpp
@@ -182,8 +185,10 @@ if(WIN32)
     # shell32 provides ExtractIconEx for the tray icon; iphlpapi provides
     # GetTcpTable for the --shortcut readiness poll (plan M9.1); wtsapi32
     # provides WTSQuerySessionInformationW/WTSFreeMemory for the wallpaper
-    # provider's off-session fallback (plan D10c).
-    target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32 iphlpapi wtsapi32)
+    # provider's off-session fallback (plan D10c); ole32 provides
+    # CoTaskMemFree and uuid provides FOLDERID_Downloads for filerecv's
+    # destination directory resolution.
+    target_link_libraries(cosmicdesk PRIVATE shell32 user32 gdi32 iphlpapi wtsapi32 ole32 uuid)
     # GUI app by default (WIN32_EXECUTABLE TRUE): no console window, so closing
     # the (never-shown) console cannot kill the tray app. Debug keeps a console
     # for log output; override either way with -DCOSMIC_CONSOLE=ON/OFF.

@@ -203,6 +203,7 @@ Settings Settings::load() {
     settings.autostart = json_bool(json, "autostart", settings.autostart);
     settings.share_wallpaper = json_bool(json, "share_wallpaper", settings.share_wallpaper);
     settings.share_clipboard = json_bool(json, "share_clipboard", settings.share_clipboard);
+    settings.share_files = json_bool(json, "share_files", settings.share_files);
 
     // hosts is read by hand with contains()/is_*() guards: json.value() throws
     // nlohmann::type_error when a key exists with the wrong type, even on a
@@ -268,6 +269,7 @@ Settings::Settings(Settings&& other) noexcept
       autostart(other.autostart),
       share_wallpaper(other.share_wallpaper),
       share_clipboard(other.share_clipboard),
+      share_files(other.share_files),
       hosts(std::move(other.hosts)) {}
 
 void Settings::add_or_update_host(const std::string& address, bool paired) {
@@ -402,6 +404,7 @@ bool Settings::save() const {
         {"autostart", autostart},
         {"share_wallpaper", share_wallpaper},
         {"share_clipboard", share_clipboard},
+        {"share_files", share_files},
         {"hosts", hosts_json},
     };
 

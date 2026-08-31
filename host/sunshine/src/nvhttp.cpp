@@ -58,6 +58,11 @@
 // /cosmic/clipboard routes. Same pattern as wallpaper.h: declared in the
 // app's src/ tree, implemented in clipboard.cpp in the cosmicdesk target.
 #include "hostglue/clipboard.h"
+// COSMIC MODIFICATION: file-transfer receiver for the POST /cosmic/file/*
+// routes (PLAN FILE_TRANSFER_PLAN.md, F1). Same pattern as clipboard.h:
+// declared in the app's src/ tree, implemented in filerecv.cpp in the
+// cosmicdesk target.
+#include "hostglue/filerecv.h"
 
 using namespace std::literals;
 
@@ -858,8 +863,10 @@ namespace nvhttp {
     // adds CosmicWallpaperHash (PLAN D10a/b, milestone W1 item 2). Version 3
     // adds the GET/POST /cosmic/clipboard routes. Version 4 adds wait=1
     // long-polling to GET /cosmic/clipboard. Version 5 adds image/png
-    // clipboard payloads to both /cosmic/clipboard routes.
-    tree.put("root.CosmicVersion", 5);
+    // clipboard payloads to both /cosmic/clipboard routes. Version 6 adds the
+    // POST /cosmic/file/* routes for client-to-host file transfer (PLAN
+    // FILE_TRANSFER_PLAN.md, F1).
+    tree.put("root.CosmicVersion", 6);
     pt::ptree displays_tree;
     int index = 0;
     for (const auto &display : cosmic::displays::list_displays()) {
@@ -1556,6 +1563,190 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  // COSMIC MODIFICATION: client-to-host file transfer (PLAN
+  // FILE_TRANSFER_PLAN.md, F1). Four routes below open/append/finalize/cancel
+  // a single in-flight upload via cosmic::filerecv; see hostglue/filerecv.h
+  // for the module contract. All four share the same owner gate as the
+  // clipboard routes above -- cosmic::clipboard's owner store has no
+  // relation to clipboard *content*, it is simply the recorded fingerprint
+  // of the client certificate that started the active stream session, so it
+  // is deliberately reused here as the generic "stream owner" gate. These
+  // routes have no owner store of their own.
+  //
+  // Unlike the clipboard routes above, none of the four ever sets
+  // close_connection_after_response. The client drives one transfer over a
+  // single reused curl easy handle, sending many sequential chunk requests;
+  // closing the connection after each response would force a fresh TLS
+  // handshake per 4 MiB chunk instead of one handshake for the whole
+  // transfer.
+
+  void cosmic_file_begin(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    if (
+      !cosmic::filerecv::enabled() || rtsp_stream::session_count() == 0 ||
+      // COSMIC MODIFICATION: see the owner-gate comment above
+      // cosmic_clipboard_post; reused verbatim here.
+      !cosmic::clipboard::is_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()))
+    ) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    auto name = get_arg(args, "name", "");
+    auto size_str = get_arg(args, "size", "0");
+    // std::strtoull never throws and returns 0 when it cannot parse any
+    // leading digits, same reasoning as the "since" parse in
+    // cosmic_clipboard_get above.
+    std::uint64_t size = std::strtoull(size_str.c_str(), nullptr, 10);
+
+    if (name.empty()) {
+      response->write(SimpleWeb::StatusCode::client_error_bad_request);
+      return;
+    }
+
+    std::string id;
+    switch (cosmic::filerecv::begin(name, size, id)) {
+      case cosmic::filerecv::BeginResult::Ok: {
+        SimpleWeb::CaseInsensitiveMultimap headers;
+        headers.emplace("X-Cosmic-File-Id", id);
+        headers.emplace("X-Cosmic-File-Version", "6");
+        response->write(SimpleWeb::StatusCode::success_ok, headers);
+        break;
+      }
+      case cosmic::filerecv::BeginResult::Busy:
+        response->write(SimpleWeb::StatusCode::client_error_conflict);
+        break;
+      case cosmic::filerecv::BeginResult::NoSpace:
+        response->write(SimpleWeb::StatusCode::server_error_insufficient_storage);
+        break;
+      case cosmic::filerecv::BeginResult::BadRequest:
+        response->write(SimpleWeb::StatusCode::client_error_bad_request);
+        break;
+      case cosmic::filerecv::BeginResult::IoError:
+        response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+        break;
+    }
+  }
+
+  void cosmic_file_chunk(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    if (
+      !cosmic::filerecv::enabled() || rtsp_stream::session_count() == 0 ||
+      // COSMIC MODIFICATION: see the owner-gate comment above
+      // cosmic_clipboard_post; reused verbatim here.
+      !cosmic::clipboard::is_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()))
+    ) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      return;
+    }
+
+    // COSMIC MODIFICATION: Simple-Web-Server has already buffered the entire
+    // body into request->content by the time this handler runs --
+    // config.max_request_streambuf_size defaults to SIZE_MAX and is
+    // server-wide, so it cannot be tightened for this route alone -- so this
+    // rejects an oversized body after it has been buffered rather than
+    // before. Acceptable only because the route sits behind
+    // client-certificate verification. Never truncate: reject outright
+    // instead. Same reasoning as cosmic_clipboard_post above.
+    if (request->content.size() > cosmic::filerecv::kMaxChunkBytes) {
+      response->write(SimpleWeb::StatusCode::client_error_payload_too_large);
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    auto id = get_arg(args, "id", "");
+    auto offset_str = get_arg(args, "offset", "0");
+    std::uint64_t offset = std::strtoull(offset_str.c_str(), nullptr, 10);
+
+    // COSMIC MODIFICATION: cosmic::filerecv::chunk() takes a const char* plus
+    // a length, so the body is materialized once into a contiguous buffer
+    // whose lifetime spans the call, rather than re-copied per use.
+    std::string body = request->content.string();
+    switch (cosmic::filerecv::chunk(id, offset, body.data(), body.size())) {
+      case cosmic::filerecv::ChunkResult::Ok: {
+        SimpleWeb::CaseInsensitiveMultimap headers;
+        headers.emplace("X-Cosmic-File-Version", "6");
+        response->write(SimpleWeb::StatusCode::success_ok, headers);
+        break;
+      }
+      case cosmic::filerecv::ChunkResult::UnknownId:
+        response->write(SimpleWeb::StatusCode::client_error_not_found);
+        break;
+      case cosmic::filerecv::ChunkResult::BadOffset:
+        response->write(SimpleWeb::StatusCode::client_error_conflict);
+        break;
+      case cosmic::filerecv::ChunkResult::TooLarge:
+        response->write(SimpleWeb::StatusCode::client_error_payload_too_large);
+        break;
+      case cosmic::filerecv::ChunkResult::IoError:
+        response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+        break;
+    }
+  }
+
+  void cosmic_file_end(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    if (
+      !cosmic::filerecv::enabled() || rtsp_stream::session_count() == 0 ||
+      // COSMIC MODIFICATION: see the owner-gate comment above
+      // cosmic_clipboard_post; reused verbatim here.
+      !cosmic::clipboard::is_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()))
+    ) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    auto id = get_arg(args, "id", "");
+
+    switch (cosmic::filerecv::end(id)) {
+      case cosmic::filerecv::EndResult::Ok: {
+        SimpleWeb::CaseInsensitiveMultimap headers;
+        headers.emplace("X-Cosmic-File-Version", "6");
+        response->write(SimpleWeb::StatusCode::success_ok, headers);
+        break;
+      }
+      case cosmic::filerecv::EndResult::UnknownId:
+        response->write(SimpleWeb::StatusCode::client_error_not_found);
+        break;
+      case cosmic::filerecv::EndResult::SizeMismatch:
+        response->write(SimpleWeb::StatusCode::client_error_conflict);
+        break;
+      case cosmic::filerecv::EndResult::IoError:
+        response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+        break;
+    }
+  }
+
+  void cosmic_file_abort(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    if (
+      !cosmic::filerecv::enabled() || rtsp_stream::session_count() == 0 ||
+      // COSMIC MODIFICATION: see the owner-gate comment above
+      // cosmic_clipboard_post; reused verbatim here.
+      !cosmic::clipboard::is_owner(cosmic_request_cert_fingerprint(request->remote_endpoint()))
+    ) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    auto id = get_arg(args, "id", "");
+
+    if (cosmic::filerecv::abort(id)) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("X-Cosmic-File-Version", "6");
+      response->write(SimpleWeb::StatusCode::success_ok, headers);
+    } else {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+    }
+  }
+
   void setup(const std::string &pkey, const std::string &cert) {
     conf_intern.pkey = pkey;
     conf_intern.servercert = cert;
@@ -1680,6 +1871,13 @@ namespace nvhttp {
     // route this codebase registers on either server.
     https_server.resource["^/cosmic/clipboard$"]["GET"] = cosmic_clipboard_get;
     https_server.resource["^/cosmic/clipboard$"]["POST"] = cosmic_clipboard_post;
+    // COSMIC MODIFICATION: file-transfer routes, HTTPS only, same trust
+    // boundary as /cosmic/clipboard above (PLAN FILE_TRANSFER_PLAN.md, F1).
+    // POST only -- there is no host->client direction yet (that is F2).
+    https_server.resource["^/cosmic/file/begin$"]["POST"] = cosmic_file_begin;
+    https_server.resource["^/cosmic/file/chunk$"]["POST"] = cosmic_file_chunk;
+    https_server.resource["^/cosmic/file/end$"]["POST"] = cosmic_file_end;
+    https_server.resource["^/cosmic/file/abort$"]["POST"] = cosmic_file_abort;
     https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
       launch(host_audio, resp, req);
     };

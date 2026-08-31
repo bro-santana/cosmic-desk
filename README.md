@@ -10,7 +10,7 @@ The Bridge shows the focused host's desktop wallpaper behind the scene, cached l
 
 ## TODOs
 
-File transfer, gamepads.
+File transfer (client→host shipped, host→client pending), gamepads.
 
 
 ## Known limitations
