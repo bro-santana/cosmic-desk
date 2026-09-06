@@ -130,6 +130,7 @@ add_executable(cosmicdesk
     src/ui/fonts.cpp
     src/ui/bridge/bridge.cpp
     src/ui/bridge/panels.cpp
+    src/ui/bridge/nebula_flow.cpp
     src/ui/bridge/scene.cpp
     src/ui/bridge/text.cpp
     src/viewer/session.cpp

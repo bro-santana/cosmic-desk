@@ -33,6 +33,7 @@
 #include <stb_image.h>
 
 #include "ui/bridge/design.h"
+#include "ui/bridge/nebula_flow.h"
 #include "ui/scale.h"
 
 namespace cosmic::ui::scene {
@@ -194,6 +195,8 @@ struct State {
     int tex_w = 0;   // last rasterized texture size (0 = never)
     int tex_h = 0;
     uint64_t last_rasterize_ms = 0;  // SDL_GetTicks() of last rasterize (0 = never)
+    NebulaFlow nebula_flow;
+    bool nebula_flow_attempted = false;
     SDL_Texture* layers[kLayerCount] = {};
     SDL_Texture* bg = nullptr;
     SDL_Texture* flash = nullptr;  // warp flash (opacity driven by the U5 envelope)
@@ -1017,8 +1020,30 @@ void DrawDashedLine(SDL_Renderer* renderer, float x1, float y1, float x2,
 // Destroys the old textures first. On any per-layer failure the slot stays
 // null and the rest continue.
 void RasterizeAll(SDL_Renderer* renderer, int tex_w, int tex_h) {
+    if (!g_state.nebula_flow_attempted) {
+        g_state.nebula_flow_attempted = true;
+        const char* base = SDL_GetBasePath();
+        if (base == nullptr) {
+            LogError("SDL_GetBasePath failed for nebula flow");
+        } else {
+            const std::string path = std::string(base) +
+                "assets/ui/layers/nebula-flow-source.svg";
+            if (!g_state.nebula_flow.load(renderer, path, tex_w, tex_h)) {
+                LogError(SDL_GetError());
+            }
+        }
+    } else if (g_state.nebula_flow.ready()) {
+        if (!g_state.nebula_flow.resize(tex_w, tex_h)) {
+            LogError(SDL_GetError());
+            // resize() preserves the previous textures in case of failure.
+        }
+    }
+
     for (int i = 0; i < kLayerCount; ++i) {
         DestroyTexture(g_state.layers[i]);
+        if (kLayers[i].sway >= 0 && g_state.nebula_flow.ready()) {
+            continue;  // Do not duplicate the eight old textures in memory.
+        }
         g_state.layers[i] = RasterizeLayer(renderer, kLayers[i], tex_w, tex_h);
     }
     DestroyTexture(g_state.bg);
@@ -1181,6 +1206,8 @@ void init(SDL_Renderer* renderer) {
 
 void shutdown(SDL_Renderer* renderer) {
     (void)renderer;
+    g_state.nebula_flow.reset();
+    g_state.nebula_flow_attempted = false;
     for (int i = 0; i < kLayerCount; ++i) {
         DestroyTexture(g_state.layers[i]);
     }
@@ -1497,6 +1524,45 @@ void draw(SDL_Renderer* renderer, int out_w, int out_h, const SceneInput& in) {
     const float cx = g_state.cx * motion;
     const float cy = g_state.cy * motion;
     for (int i = 0; i < kLayerCount; ++i) {
+        if (kLayers[i].sway >= 0 && g_state.nebula_flow.ready()) {
+            if (kLayers[i].sway != 0) {
+                continue;  // All colors are composed by the first entry.
+            }
+
+            const Layer& nebula = kLayers[i];
+            const float nw = art_w * nebula.es;
+            const float nh = art_h * nebula.es;
+            const SDL_FRect nebula_dest{
+                0.5f * (out_w - nw) + nebula.ex - cx * nebula.depth,
+                0.5f * (out_h - nh) + nebula.ey - cy * nebula.depth,
+                nw,
+                nh,
+            };
+
+            // Preserve the warp fade used by the existing scene.
+            const float f = std::clamp(g_state.warp_t / 0.85f, 0.0f, 1.0f);
+            const float eased = f * f * (3.0f - 2.0f * f);
+            const float alpha = nebula.alpha * (1.0f - 0.875f * eased);
+            const double now_s = static_cast<double>(SDL_GetTicksNS()) * 1.0e-9;
+
+            if (g_state.nebula_flow.draw(nebula_dest, now_s, alpha)) {
+                continue;
+            }
+
+            // A render failure is logged once, then the established band path
+            // is restored for subsequent frames.
+            LogError(SDL_GetError());
+            g_state.nebula_flow.reset();
+            for (int j = 0; j < kLayerCount; ++j) {
+                if (kLayers[j].sway >= 0) {
+                    DestroyTexture(g_state.layers[j]);
+                    g_state.layers[j] = RasterizeLayer(
+                        renderer, kLayers[j], g_state.tex_w, g_state.tex_h);
+                }
+            }
+            // Fall through so the first old band is drawn normally below.
+        }
+
         // The shooting star sits between the sky layers and the desk group
         // (UI_MIGRATION A3), alongside the warp flash. It animates over a 14s
         // cycle that starts 3s in and is visible only the first ~13% of it.
