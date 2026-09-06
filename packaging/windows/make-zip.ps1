@@ -65,6 +65,10 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "packaging\windows\uninstall-service
 
 # 2. DLL bundling.
 $DllPaths = @()
+# Basenames of the DLLs the exe actually imports, as reported by ntldd. Used
+# by the critical-DLL guard below to tell a genuinely missing DLL apart from
+# one this build simply does not link against.
+$LinkedDllNames = @()
 # MSYS2 bin-dir discovery, in order of preference:
 # 1. MSYSTEM_PREFIX (set inside an MSYS2 shell; e.g. C:/msys64/ucrt64)
 # 2. The compiler recorded in build\CMakeCache.txt (CMAKE_CXX_COMPILER) — the
@@ -115,6 +119,7 @@ if ($Tool) {
     $Pattern = '^\s*(\S+) => (.*?) \(0x[0-9a-f]+\)$'
     foreach ($line in $Output) {
         if ($line -match $Pattern) {
+            $LinkedDllNames += $matches[1].Trim()
             $dll = $matches[2].Trim()
             # Convert MSYS paths (/c/..., /ucrt64/...) to Windows paths via
             # cygpath; fall back to a manual /c/... conversion.
@@ -263,8 +268,25 @@ if ($DllCount -eq 0) {
 # Guard: the wildcard fallback above is a best effort; verify the
 # load-critical DLLs actually made it into the bundle, or fail loudly instead
 # of shipping a bundle that dies at startup with a missing-DLL dialog.
+#
+# SDL3 is the one conditional entry. CMakeLists.txt only uses the MSYS2 SDL3
+# package when it satisfies the version floor, and otherwise builds the
+# vendored third-party/SDL submodule statically -- such an exe imports no
+# SDL3.dll at all, so demanding one here fails a perfectly good bundle. Trust
+# ntldd's import list when we have it, and otherwise CMakeCache (SDL3_DIR is
+# written only when find_package(SDL3) succeeded).
+$CacheFileForSdl = Join-Path $RepoRoot "build\CMakeCache.txt"
+if ($Ntldd) {
+    $NeedsSdlDll = $LinkedDllNames -contains 'SDL3.dll'
+} else {
+    $NeedsSdlDll = [bool](Select-String -LiteralPath $CacheFileForSdl -Pattern '^SDL3_DIR:PATH=' -ErrorAction SilentlyContinue)
+}
+$CriticalNames = @('libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll')
+if ($NeedsSdlDll) {
+    $CriticalNames = @('SDL3.dll') + $CriticalNames
+}
 $MissingCritical = @()
-foreach ($name in @('SDL3.dll', 'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll')) {
+foreach ($name in $CriticalNames) {
     if (-not (Test-Path -LiteralPath (Join-Path $DistDir $name))) {
         $MissingCritical += $name
     }
@@ -291,6 +313,9 @@ $TotalBytes = (Get-ChildItem -LiteralPath $DistDir -Recurse |
     Measure-Object -Property Length -Sum).Sum
 $SizeMB = [math]::Round($TotalBytes / 1MB, 1)
 Write-Output "Cosmic Desk bundle: $DllCount DLL(s), $SizeMB MB"
+if (-not $NeedsSdlDll) {
+    Write-Output "SDL3: linked statically from third-party/SDL (no SDL3.dll bundled)."
+}
 Write-Output "Folder: $DistDir"
 Write-Output "Zip: $ZipPath"
 Write-Output ""
